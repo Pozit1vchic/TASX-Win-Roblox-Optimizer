@@ -1,22 +1,27 @@
 # TASX Optimizer
 
-TASX is a program designed to optimize Roblox's heavy over utilization of system resources, TASX optimizes RAM & CPU usage and optimizes threads. TASX is fully external and does not modify Roblox's memory.
+TASX is an optimizer designed to aid in combatting Roblox engine's not-so-good optimization and memory hogging, while increasing FPS. No, this will not get you banned, it is not a cheat.
 
-## How does it run?
+## What does it do?
 
-TASX is console-less, when you run it it'll dissapear. I'd reccomend putting it in startup, it uses no memory or CPU so it won't hurt your PC. To terminate it, open task manager & search ``TASX``.
+TASX reduces resource usage (RAM & CPU) for unfocused Roblox windows by adjusting Windows API configuration settings, if a Roblox window is in-focus it'll be elevated to highest CPU priority & affinity (Leads to higher FPS / perf)
+
+This is useful for both farmers & daily players.
 
 ## How do I use this?
 
-For non-programmers, head over to the [TITAN Discord](https://hub.titansoftwork.com/) & download the precompiled binary (This comes with source), to add it to startup run ``Windows + R`` & type ``shell:startup``, then drag ``TASX.exe`` in there.
+For non-programmers, head over to the [TITAN Discord](https://hub.titansoftwork.com/) & download the the latest release in #OPTIMIZER (This comes with the source), install TASX with ``ScheduledTaskInstaller. bat``, to remove use ``Uninstall.bat``
 
-For programmers, open the solution file & compile as debug/release (no difference).
+This will automatically add TASX to startup as "TASX Agent".
+
+For programmers, open the solution file & compile as Debug for console debugging or Release for the actual product, keep in mind ``TASX.exe`` must be in the same DIR as the ``.bat`` files for it to be serviced.
+
+## How does it work under the hood?
 
 ## Prereqs (All)
 
-- x64 (If you don't know, then you probably are)
-- Windows 10/11
+- Be on Windows
 
-## Prereqs (If you're compiling)
+## Prereqs (If compiling)
 
-- Visual Studio w/ C++ build tools
+- Visual Studio w/ C++ build tools (C++ 17)
