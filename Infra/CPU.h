@@ -1,6 +1,3 @@
-#ifndef CPU_CONTROL_H
-#define CPU_CONTROL_H
-
 #include <windows.h>
 
 #pragma comment(lib, "PowrProf.lib")
@@ -9,6 +6,5 @@
 #define ProcessorPerformanceBoostMode ((POWER_INFORMATION_LEVEL)35)
 #endif
 
-bool ApplyCPULimits(HANDLE hProcess);
-
-#endif
+bool TasxSetLowestPriorClass(HANDLE hProcess);
+bool TasxSetHighestPriorClass(HANDLE hProcess);

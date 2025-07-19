@@ -11,6 +11,9 @@
     <ClCompile Include="Infra\CPU.cc">
       <Filter>Infra\Core</Filter>
     </ClCompile>
+    <ClCompile Include="Infra\winhook.cc">
+      <Filter>Infra\Core</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Infra\CPU.h">
@@ -20,6 +23,9 @@
       <Filter>Infra\Header</Filter>
     </ClInclude>
     <ClInclude Include="Infra\trimmer.h">
+      <Filter>Infra\Header</Filter>
+    </ClInclude>
+    <ClInclude Include="Infra\winhook.h">
       <Filter>Infra\Header</Filter>
     </ClInclude>
   </ItemGroup>

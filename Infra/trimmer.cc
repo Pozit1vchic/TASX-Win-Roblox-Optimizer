@@ -16,7 +16,7 @@ bool StartTrimmer(DWORD pid, HANDLE processHandle)
 {
     std::lock_guard<std::mutex> lock(g_trimmerMutex);
 
-    if (g_trimmerStates.contains(pid) && g_trimmerStates[pid].load())
+    if (g_trimmerStates.find(pid) != g_trimmerStates.end() && g_trimmerStates[pid].load())
         return false;
 
     DWORD access = 0;
@@ -55,11 +55,14 @@ void StopTrimmer(DWORD pid)
 {
     std::lock_guard<std::mutex> lock(g_trimmerMutex);
 
-    if (g_trimmerStates.contains(pid)) {
+    if (g_trimmerStates.find(pid) != g_trimmerStates.end()) {
         g_trimmerStates[pid] = false;
 
-        if (g_trimmerThreads[pid].joinable())
+        if (g_trimmerThreads.find(pid) != g_trimmerThreads.end() &&
+            g_trimmerThreads[pid].joinable())
+        {
             g_trimmerThreads[pid].join();
+        }
 
         g_trimmerStates.erase(pid);
         g_trimmerThreads.erase(pid);

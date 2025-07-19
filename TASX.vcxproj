@@ -104,6 +104,8 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -118,8 +120,8 @@
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <LanguageStandard>stdcpplatest</LanguageStandard>
-      <LanguageStandard_C>stdclatest</LanguageStandard_C>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <OmitFramePointers>true</OmitFramePointers>
       <StringPooling>true</StringPooling>
@@ -144,11 +146,13 @@
     <ClCompile Include="Infra\CPU.cc" />
     <ClCompile Include="Infra\master.cpp" />
     <ClCompile Include="Infra\trimmer.cc" />
+    <ClCompile Include="Infra\winhook.cc" />
     <ClCompile Include="Infra\WMI.cc" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Infra\CPU.h" />
     <ClInclude Include="Infra\trimmer.h" />
+    <ClInclude Include="Infra\winhook.h" />
     <ClInclude Include="Infra\WMI.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
