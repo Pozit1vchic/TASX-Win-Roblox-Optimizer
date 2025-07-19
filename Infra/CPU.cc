@@ -1,16 +1,18 @@
-﻿#include "CPU.h"
+﻿#define NOMINMAX
+
+#include "CPU.h"
 
 #include <iostream>
 #include <vector>
 #include <psapi.h>
 #include <tlhelp32.h>
 #include <powerbase.h>
-
-static int g_osMajorVersion = 0;
-
 #include <winternl.h>
 
 typedef LONG(WINAPI* RtlGetVersionPtr)(PRTL_OSVERSIONINFOW);
+
+static int g_osMajorVersion = 0;
+static bool g_systemInfoLogged = false;
 
 static void InitOSVersion()
 {
@@ -19,7 +21,7 @@ static void InitOSVersion()
     HMODULE hNtDll = GetModuleHandleW(L"ntdll.dll");
     if (!hNtDll) return;
 
-    RtlGetVersionPtr fn = (RtlGetVersionPtr)GetProcAddress(hNtDll, "RtlGetVersion");
+    auto fn = reinterpret_cast<RtlGetVersionPtr>(GetProcAddress(hNtDll, "RtlGetVersion"));
     if (!fn) return;
 
     RTL_OSVERSIONINFOW rovi = { 0 };
@@ -28,9 +30,8 @@ static void InitOSVersion()
     if (fn(&rovi) == 0)
     {
         if (rovi.dwMajorVersion == 10 && rovi.dwMinorVersion == 0)
-        {
             g_osMajorVersion = (rovi.dwBuildNumber >= 22000) ? 11 : 10;
-        }
+
         std::wcout << L"[TASX] Detected Windows Version " << g_osMajorVersion << std::endl;
     }
 }
@@ -43,9 +44,7 @@ static DWORD LogicalCores()
         return 0;
 
     std::vector<BYTE> buffer(len);
-    auto* info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data());
-
-    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, info, &len))
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data()), &len))
         return 0;
 
     DWORD count = 0;
@@ -60,6 +59,23 @@ static DWORD LogicalCores()
     return count;
 }
 
+static void LogSystemCores()
+{
+    if (g_systemInfoLogged) return;
+
+    SYSTEM_INFO sysInfo{};
+    GetSystemInfo(&sysInfo);
+
+    DWORD logicalCores = LogicalCores();
+    DWORD physCores = sysInfo.dwNumberOfProcessors;
+
+    std::wcout << L"[TASX] System reports " << physCores << L" physical processors" << std::endl;
+    std::wcout << L"[TASX] Detected " << logicalCores << L" logical cores" << std::endl;
+    std::wcout << L"[TASX] TASX will scale affinity and trimming logic to leave system headroom" << std::endl;
+
+    g_systemInfoLogged = true;
+}
+
 static DWORD_PTR GetCoreMask(int useCores)
 {
     DWORD_PTR mask = 0;
@@ -70,17 +86,14 @@ static DWORD_PTR GetCoreMask(int useCores)
 
 static void DisableCPUBoost()
 {
-    auto hPowrProf = LoadLibraryW(L"PowrProf.dll");
+    HMODULE hPowrProf = LoadLibraryW(L"PowrProf.dll");
     if (!hPowrProf) {
         std::wcerr << L"[TASX] Could not load PowrProf.dll" << std::endl;
         return;
     }
 
     using PowerSetInformationFn = NTSTATUS(WINAPI*)(HANDLE, int, PVOID, ULONG);
-    auto fn = reinterpret_cast<PowerSetInformationFn>(
-        GetProcAddress(hPowrProf, "PowerSetInformation")
-        );
-
+    auto fn = reinterpret_cast<PowerSetInformationFn>(GetProcAddress(hPowrProf, "PowerSetInformation"));
     if (fn) {
         DWORD boost = 0;
         if (fn(nullptr, 35 /*ProcessorPerformanceBoostMode*/, &boost, sizeof(boost)) == 0)
@@ -144,17 +157,24 @@ static void DisableEfficiencyMode(HANDLE hProcess)
 
 bool TasxSetLowestPriorClass(HANDLE hProcess)
 {
-    if (!hProcess || hProcess == INVALID_HANDLE_VALUE) return false;
+    LogSystemCores();
 
+    if (!hProcess || hProcess == INVALID_HANDLE_VALUE) return false;
     InitOSVersion();
 
     DWORD logicalCores = LogicalCores();
     if (logicalCores < 2) {
-        std::wcerr << L"[TASX] Not enough cores" << std::endl;
+        std::wcerr << L"[TASX] Not enough cores for trimming logic" << std::endl;
         return false;
     }
 
-    DWORD useCores = max(2, logicalCores / 2);
+    if (logicalCores < 12) {
+        std::wcout << L"[TASX] Skipping affinity/boost changes due to low core count (" << logicalCores << L")" << std::endl;
+        return SetPriorityClass(hProcess, IDLE_PRIORITY_CLASS);
+    }
+
+    DWORD useCores = std::max<DWORD>(2, logicalCores / 2);
+
     DWORD_PTR mask = GetCoreMask(useCores);
 
     if (!SetProcessAffinityMask(hProcess, mask))
@@ -163,7 +183,7 @@ bool TasxSetLowestPriorClass(HANDLE hProcess)
         std::wcout << L"[TASX] Affinity limited to " << useCores << L" cores" << std::endl;
 
     if (!SetPriorityClass(hProcess, IDLE_PRIORITY_CLASS))
-        std::wcerr << L"[TASX Failed to set IDLE_PRIORITY_CLASS" << std::endl;
+        std::wcerr << L"[TASX] Failed to set IDLE_PRIORITY_CLASS" << std::endl;
     else
         std::wcout << L"[TASX] Priority set to IDLE_PRIORITY_CLASS" << std::endl;
 
@@ -187,21 +207,24 @@ bool TasxSetHighestPriorClass(HANDLE hProcess)
         return false;
     }
 
-    if (!SetProcessAffinityMask(hProcess, systemMask)) {
-        std::wcerr << L"[TASX] Failed to set full affinity | Code: " << GetLastError() << std::endl;
+    DWORD logicalCores = LogicalCores();
+    if (logicalCores >= 12) {
+        if (!SetProcessAffinityMask(hProcess, systemMask))
+            std::wcerr << L"[TASX] Failed to set full affinity | Code: " << GetLastError() << std::endl;
+        else
+            std::wcout << L"[TASX] Affinity set to all cores" << std::endl;
     }
     else {
-        std::wcout << L"[TASX] Affinity set to all cores" << std::endl;
+        std::wcout << L"[TASX] Skipping full affinity (CPU has " << logicalCores << L" cores)" << std::endl;
     }
 
-    if (!SetPriorityClass(hProcess, HIGH_PRIORITY_CLASS)) {
+    if (!SetPriorityClass(hProcess, HIGH_PRIORITY_CLASS))
         std::wcerr << L"[TASX] Failed to set HIGH_PRIORITY_CLASS | Code: " << GetLastError() << std::endl;
-    }
-    else {
+    else
         std::wcout << L"[TASX] Priority set to HIGH_PRIORITY_CLASS" << std::endl;
-    }
 
-    if (g_osMajorVersion == 11) DisableEfficiencyMode(hProcess);
+    if (g_osMajorVersion == 11)
+        DisableEfficiencyMode(hProcess);
 
     return true;
 }
