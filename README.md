@@ -10,7 +10,7 @@ This is useful for both farmers & daily players.
 
 ## How do I use this?
 
-For non-programmers, head over to the [TITAN Discord](https://hub.titansoftwork.com/) & download the the latest release in #OPTIMIZER (This comes with the source), install TASX with ``ScheduledTaskInstaller. bat``, to remove use ``Uninstall.bat``
+For non-programmers, head over to the [RYFTENIUS Discord](https://hub.ryftenius.com/) & download the the latest release in #OPTIMIZER (This comes with the source), install TASX with ``ScheduledTaskInstaller. bat``, to remove use ``Uninstall.bat``
 
 This will automatically add TASX to startup as "TASX Agent".
 

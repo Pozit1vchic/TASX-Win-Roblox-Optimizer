@@ -42,5 +42,5 @@ echo.
 echo TASX v0.3 BETA : Made by @8damon
 echo TASX will run silently in the background and start with your computer.
 echo To uninstall, run Uninstall.bat
-echo For help, join https://hub.titansoftwork.com/
+echo For help, join https://hub.ryftenius.com/
 pause
