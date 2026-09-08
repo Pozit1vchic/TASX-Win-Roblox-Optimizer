@@ -51,6 +51,22 @@ std::mutex g_queueMutex;
 std::condition_variable g_queueCv;
 std::deque<Event> g_queue;
 
+std::int64_t NowMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void LogRateLimit(const char* tag, int minIntervalSec)
+{
+    static std::unordered_map<std::string, std::int64_t> lastCall;
+    std::int64_t now = NowMs();
+    std::string k(tag);
+    if (lastCall.count(k) && (now - lastCall[k]) < (std::int64_t)minIntervalSec * 1000)
+        return; // rate-limited
+    lastCall[k] = now;
+}
+
 void PushEvent(Event ev)
 {
     {
@@ -327,6 +343,10 @@ void ApplyFocusIfChanged()
     if (hwnd) GetWindowThreadProcessId(hwnd, &pid);
 
     bool isRoblox = pid != 0 && g_rbxHandles.count(pid) != 0;
+    static std::int64_t lastFocusMs = 0;
+    std::int64_t nowMs = NowMs();
+    if (isRoblox && (nowMs - lastFocusMs) < 500) return; // hysteresis coalesce
+    lastFocusMs = nowMs;
 
     if (isRoblox && g_appliedFocus != pid)
     {
@@ -452,6 +472,12 @@ void LowMemReactorStart()
 
 void HandleRobloxCreated(DWORD pid)
 {
+    /* STEP 4 — Memory safety: pagefile volume free-space check */
+    ULARGE_INTEGER freeBytes = {0};
+    if (GetDiskFreeSpaceExW(NULL, &freeBytes, NULL, NULL)) {
+        if (freeBytes.QuadPart < (8ULL << 30))
+            std::cout << "[TASX] WARNING: Pagefile volume < 8 GB free" << std::endl;
+    }
     bool isNew = !g_rbxHandles.count(pid);
     HookClient(pid);
     ApplyFocusIfChanged(); /* the new instance may already be the foreground */

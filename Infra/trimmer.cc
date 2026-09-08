@@ -36,6 +36,7 @@ HANDLE g_hThread = nullptr;
 HANDLE g_hStop = nullptr;
 HANDLE g_hWake = nullptr;
 HANDLE g_hLowMem = nullptr;
+std::int64_t g_lowMemCooldownMs = 30000;
 
 std::int64_t NowMs()
 {
@@ -67,6 +68,10 @@ std::int64_t IntervalMs()
     if (load >= 90) return ClampInterval(base / 4);   /* farm is choking RAM */
     if (load >= 75) return ClampInterval(base / 2);
     if (load <= 60) return ClampInterval(base * 2);   /* plenty of headroom */
+    /* Also adapt by commit charge (STEP 3) */
+    int commitPct = tasx_get_commit_percent();
+    if (commitPct >= 80) return ClampInterval(base / 2);
+    if (commitPct < 50) return ClampInterval(base * 2);
     return ClampInterval(base);
 }
 
@@ -144,8 +149,18 @@ DWORD WINAPI SchedulerThread(LPVOID)
             break;
         }
         if (waitResult == WAIT_OBJECT_0 + 1 && g_hLowMem) {
-            // LowMemoryResourceNotification -> aggressive hard trim all backgrounds
-            std::cout << "[Trimmer] LowMem signal -> aggressive trim" << std::endl;
+            // LowMemoryResourceNotification fired; handle only once per cooldown
+            std::int64_t nowMs = NowMs();
+            static std::int64_t lastLowMemMs = 0;
+            if (nowMs - lastLowMemMs < g_lowMemCooldownMs) {
+                // Cooldown active: skip handling, reset wait to regular timeout
+                if (g_hLowMem) {
+                    BOOL clear = QueryMemoryResourceNotification(g_hLowMem, NULL);
+                    (void)clear;
+                }
+                continue;
+            }
+            lastLowMemMs = nowMs;
             // Check commit >90 and purge as well
             int pct = tasx_get_commit_percent();
             if (pct >= 90) {

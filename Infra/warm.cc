@@ -4,11 +4,16 @@
 
 #include <algorithm>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
+#include <unordered_set>
 
 namespace {
+
+std::mutex g_primedPathsMtx;
+std::unordered_set<std::wstring> g_primedPaths; // once per version dir
 
 typedef BOOL (WINAPI *PrefetchVirtualMemoryFn)(HANDLE hProcess,
                                                ULONG_PTR numberOfEntries,
@@ -94,20 +99,30 @@ int FilePriority(const wchar_t* name)
 void WarmClientFilesAsync(DWORD pid)
 {
     if (!config_get_bool("TASX", "WarmClientFiles", 1)) return;
+    if (!config_get_bool("TASX", "WarmOncePerVersion", 1)) return; // already default
 
+    // Cache primed paths globally — only prime once per version directory
     std::thread([pid]() {
         HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-        if (!h) return;
+        HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (!hProc) return;
 
         wchar_t path[MAX_PATH] = {};
         DWORD size = MAX_PATH;
-        BOOL ok = QueryFullProcessImageNameW(h, 0, path, &size);
-        CloseHandle(h);
+        BOOL ok = QueryFullProcessImageNameW(hProc, 0, path, &size);
+        CloseHandle(hProc);
         if (!ok) return;
 
         std::wstring dir(path);
         size_t slash = dir.find_last_of(L"\\/");
         if (slash == std::wstring::npos) return;
+        dir.resize(slash);
+
+    std::lock_guard<std::mutex> lock(g_primedPathsMtx); // protect cache set
+    if (g_primedPaths.count(dir)) {
+            std::cout << "[Warm] Version dir already primed: " << std::string(dir.begin(), dir.end()) << std::endl;
+            return; // no-op for same version
+        }
         dir.resize(slash);
 
         ULONGLONG budget =
@@ -141,9 +156,12 @@ void WarmClientFilesAsync(DWORD pid)
                 warmed += f.bytes;
         }
 
-        if (warmed)
-            std::cout << "[Warm] Shared pages primed: " << (warmed >> 20)
+        if (warmed) {
+            std::lock_guard<std::mutex> lock(g_primedPathsMtx);
+            g_primedPaths.insert(dir);
+            std::cout << "[Warm] Shared pages primed (once): " << (warmed >> 20)
                       << " MB from " << std::string(dir.begin(), dir.end())
-                      << " (one pass -> all instances)" << std::endl;
+                      << std::endl;
+        }
     }).detach();
 }

@@ -30,6 +30,17 @@ TASX watches for Roblox processes (WMI process watcher + event-driven foreground
 
 All of the above is configurable — see `TASX.ini` (documented, optional; sane defaults apply without it).
 
+## Injector Coexistence Contract
+
+TASX and the external FFlags/Injector launcher are designed to share the same clients without conflict.
+
+| Component | Owns | Never touches |
+|---|---|---|
+| TASX (this .exe) | Priority, affinity, EcoQoS, I/O + mem priority, Job limits, trim, audio mute, ETW | Graphics settings (FPS, renderer, lighting, texture) |
+| Injector (external) | FPS cap (`UncapFps`/`TargetFps`), render mode (`Renderer`), lighting (`Lighting`), texture (`TextureQuality`), volume | Job limits, affinity, trim |
+
+When `InjectorOwnsGraphics=1` (default), `FFlagsApply` skips graphics keys and writes only telemetry-disable + cache settings, preserving unknown JSON keys via atomic temp-file + `MoveFileEx`.
+
 ## What do I need to know?
 
 - HKLM-level tweaks and the standby-list purge require elevation — run ``ScheduledTaskInstaller.bat`` once (creates the elevated "TASX Agent" startup task). Values are written only when they differ, everything is idempotent.

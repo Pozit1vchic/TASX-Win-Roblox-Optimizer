@@ -16,6 +16,7 @@ void StopTrimmer(DWORD pid);
 void StopAllTrimmers();
 
 /* PID of the currently focused Roblox instance (0 = none focused). */
+void TrimmerSetLowMemCooldown(int sec);
 void TrimmerSetFocused(DWORD pid);
 
 /* Immediate trim pass over all registered background clients
