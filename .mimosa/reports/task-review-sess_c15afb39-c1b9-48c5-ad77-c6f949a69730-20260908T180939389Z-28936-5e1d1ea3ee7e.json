@@ -1,0 +1,491 @@
+{
+  "schema_version": "mimosa-task-review/v2",
+  "run_id": "20260908T180939389Z-28936-5e1d1ea3ee7e",
+  "run_status": "inconclusive",
+  "errors": [
+    {
+      "stage": "candidate-select",
+      "target": "C:/Users/Petrunin Arsenii/AppData/Local/Temp/tt.c",
+      "reason": "changed_file_unreadable: observed changed file no longer exists or cannot be read"
+    },
+    {
+      "stage": "candidate-select",
+      "target": "C:/Users/Petrunin Arsenii/AppData/Local/Temp/th.cpp",
+      "reason": "changed_file_unreadable: observed changed file no longer exists or cannot be read"
+    },
+    {
+      "stage": "candidate-select",
+      "target": "C:/Users/Petrunin Arsenii/AppData/Local/Temp/big.cpp",
+      "reason": "changed_file_unreadable: observed changed file no longer exists or cannot be read"
+    },
+    {
+      "stage": "candidate-select",
+      "target": "Infra/netcache_stub.cc",
+      "reason": "changed_file_unreadable: observed changed file no longer exists or cannot be read"
+    },
+    {
+      "stage": "candidate-select",
+      "target": "Infra/stubs.cc",
+      "reason": "changed_file_unreadable: observed changed file no longer exists or cannot be read"
+    },
+    {
+      "stage": "candidate-select",
+      "target": "Infra/min1.cc",
+      "reason": "changed_file_unreadable: observed changed file no longer exists or cannot be read"
+    },
+    {
+      "stage": "candidate-select",
+      "target": "Infra/min2.cc",
+      "reason": "changed_file_unreadable: observed changed file no longer exists or cannot be read"
+    },
+    {
+      "stage": "candidate-select",
+      "target": "C:/Users/Petrunin Arsenii/AppData/Local/Temp/chrono.cpp",
+      "reason": "changed_file_unreadable: observed changed file no longer exists or cannot be read"
+    }
+  ],
+  "coverage": {
+    "schema_version": "mimosa-hook-coverage/v1",
+    "status": "partial",
+    "scope": "hook_observed_diff",
+    "baseline": {
+      "complete": true,
+      "captured_files": 37,
+      "candidate_limit": 5000,
+      "truncated": false,
+      "enumeration_error_count": 0,
+      "snapshot_error_count": 0,
+      "compensated_target_count": 16
+    },
+    "change_tracking": {
+      "touched_observed": 24,
+      "touched_retained": 24,
+      "truncated": false,
+      "bash_mutation": true,
+      "bash_discovered": 16,
+      "bash_discovery_limit": 80,
+      "bash_discovery_truncated": false
+    },
+    "candidates": {
+      "eligible_files": 16,
+      "selected_files": 16,
+      "limit": 20,
+      "truncated": false
+    },
+    "scanning": {
+      "required_files": 16,
+      "scanned_files": 16,
+      "skipped_files": 0,
+      "failed_files": 0,
+      "project_checks_required": 0,
+      "project_checks_completed": 0
+    },
+    "notification": {
+      "eligible_findings": 0,
+      "detailed_findings": 0,
+      "detail_limit": 3,
+      "truncated": false
+    },
+    "reason_counts": {
+      "changed_file_unreadable": 8,
+      "project_check_failed": 8
+    },
+    "reasons": [
+      {
+        "code": "changed_file_unreadable",
+        "stage": "candidate-select",
+        "target": "C:/Users/Petrunin Arsenii/AppData/Local/Temp/tt.c",
+        "detail": "observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "changed_file_unreadable",
+        "stage": "candidate-select",
+        "target": "C:/Users/Petrunin Arsenii/AppData/Local/Temp/th.cpp",
+        "detail": "observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "changed_file_unreadable",
+        "stage": "candidate-select",
+        "target": "C:/Users/Petrunin Arsenii/AppData/Local/Temp/big.cpp",
+        "detail": "observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "changed_file_unreadable",
+        "stage": "candidate-select",
+        "target": "Infra/netcache_stub.cc",
+        "detail": "observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "changed_file_unreadable",
+        "stage": "candidate-select",
+        "target": "Infra/stubs.cc",
+        "detail": "observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "changed_file_unreadable",
+        "stage": "candidate-select",
+        "target": "Infra/min1.cc",
+        "detail": "observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "changed_file_unreadable",
+        "stage": "candidate-select",
+        "target": "Infra/min2.cc",
+        "detail": "observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "changed_file_unreadable",
+        "stage": "candidate-select",
+        "target": "C:/Users/Petrunin Arsenii/AppData/Local/Temp/chrono.cpp",
+        "detail": "observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "C:/Users/Petrunin Arsenii/AppData/Local/Temp/tt.c",
+        "detail": "changed_file_unreadable: observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "C:/Users/Petrunin Arsenii/AppData/Local/Temp/th.cpp",
+        "detail": "changed_file_unreadable: observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "C:/Users/Petrunin Arsenii/AppData/Local/Temp/big.cpp",
+        "detail": "changed_file_unreadable: observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "Infra/netcache_stub.cc",
+        "detail": "changed_file_unreadable: observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "Infra/stubs.cc",
+        "detail": "changed_file_unreadable: observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "Infra/min1.cc",
+        "detail": "changed_file_unreadable: observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "Infra/min2.cc",
+        "detail": "changed_file_unreadable: observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "C:/Users/Petrunin Arsenii/AppData/Local/Temp/chrono.cpp",
+        "detail": "changed_file_unreadable: observed changed file no longer exists or cannot be read",
+        "affects_completion": true
+      }
+    ],
+    "reasons_truncated": false
+  },
+  "generated_at": "2026-09-08T18:09:39.389Z",
+  "session_id": "sess_c15afb39-c1b9-48c5-ad77-c6f949a69730",
+  "target": ".",
+  "revision": null,
+  "rules_version": "unavailable",
+  "diff_hash": "4bfc89df92fde4d292285917d48414df85539ce59e841d4c45840b4fae74239f",
+  "diff": {
+    "algorithm": "sha256",
+    "changed_file_count": 16,
+    "changed_files": [
+      {
+        "file": "Infra/audio.cc",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 106
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "24c35d8c1fe05421f4091a871521ebb0742d7f2a0cc726b0e8918e36bd50fd5d"
+      },
+      {
+        "file": "Infra/audio.h",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 11
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "72dad626e88b85b4654dbd29a6268e03a73e8a2a6a9d1a79f122b9ef564aad01"
+      },
+      {
+        "file": "Infra/desktop.cc",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 46
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "2e8ed8b72e390a5208627e092085092ea0e0d9eefa96cf8963e0636e0a979f9d"
+      },
+      {
+        "file": "Infra/desktop.h",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 10
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "3639247db1e358ec9281ce5d4f194989906c3e2fbf46e98bac90d99f1be84e89"
+      },
+      {
+        "file": "Infra/jobs.cc",
+        "ranges": [
+          {
+            "start": 25,
+            "end": 28
+          },
+          {
+            "start": 41,
+            "end": 41
+          },
+          {
+            "start": 55,
+            "end": 55
+          },
+          {
+            "start": 165,
+            "end": 203
+          }
+        ],
+        "before_hash": "eb3177f90a09925684e93d02b342cf665650589d31bd85d018f63d566e08f211",
+        "after_hash": "16786b79ce0f2108c0598eb1100947633d9f6ce57f08fb642d39f3410b7fb430"
+      },
+      {
+        "file": "Infra/jobs.h",
+        "ranges": [
+          {
+            "start": 22,
+            "end": 29
+          }
+        ],
+        "before_hash": "d726a9cc02162bdddd04244322bf70f92eb44dc6af7f967cb8ed0da66c9251d3",
+        "after_hash": "ddf7e31aa5fc39b9e90e90e95aee8bba9bae85ac92e89dbeb6b2036f542c1a57"
+      },
+      {
+        "file": "Infra/master.cpp",
+        "ranges": [
+          {
+            "start": 27,
+            "end": 32
+          },
+          {
+            "start": 118,
+            "end": 125
+          },
+          {
+            "start": 174,
+            "end": 177
+          },
+          {
+            "start": 285,
+            "end": 288
+          },
+          {
+            "start": 423,
+            "end": 423
+          },
+          {
+            "start": 478,
+            "end": 484
+          },
+          {
+            "start": 487,
+            "end": 487
+          },
+          {
+            "start": 489,
+            "end": 489
+          }
+        ],
+        "before_hash": "00d8fa503319014970223fa8fbe91d50485ced16983590292bda09530db14119",
+        "after_hash": "f03c31bc759b971aeeb30a021d616fe8abf49af28af3d6668ebd2a27126a9d33"
+      },
+      {
+        "file": "Infra/netcache.cc",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 188
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "bc653e606359560932a378eef1f1978b5577bb03bd1c3cb472cf0846aab3176c"
+      },
+      {
+        "file": "Infra/netcache.h",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 21
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "3b6d48b9ba071ccd5917cc979c495007ca01618656c40b1ade69a7aaa6494777"
+      },
+      {
+        "file": "Infra/ntsys.c",
+        "ranges": [
+          {
+            "start": 275,
+            "end": 306
+          }
+        ],
+        "before_hash": "0430c360fe7f8b80f530cb2e0303f1e945c2e6372c40b01094136f3fc1709cf7",
+        "after_hash": "b527c06a37c7e77ff47e43ee747e73d3cca3f143e0dce4a1b5a87dcbd11c4bdf"
+      },
+      {
+        "file": "Infra/ntsys.h",
+        "ranges": [
+          {
+            "start": 92,
+            "end": 105
+          }
+        ],
+        "before_hash": "87b4742373a92a1497f6b3f74ac9d39490b6795610529859569432eec55906ee",
+        "after_hash": "a48f4cf5aa212d916c2c7433c3b0b3c86fd6a90e134ccd60d69443993d562900"
+      },
+      {
+        "file": "Infra/stats.cc",
+        "ranges": [
+          {
+            "start": 37,
+            "end": 72
+          }
+        ],
+        "before_hash": "7706a713f5bd8cd5da9dbf6e23f6cd3f7fa56911c031fd8416d4d2d7c47bb13b",
+        "after_hash": "885c3f3b4823ca55e9c7280ed2d081acf0b0090c134cf1e2462fabc9f5f712b5"
+      },
+      {
+        "file": "Infra/stats.h",
+        "ranges": [
+          {
+            "start": 19,
+            "end": 22
+          }
+        ],
+        "before_hash": "0cba35c460aa58871c322b32157c0727785273f7a62b87e11485402c203b109a",
+        "after_hash": "5f651b0b83edb9caafed180815174704a1eb63dbdd512ac30bb9e8648dbeee1d"
+      },
+      {
+        "file": "Infra/tweaks.cc",
+        "ranges": [
+          {
+            "start": 78,
+            "end": 136
+          },
+          {
+            "start": 209,
+            "end": 219
+          }
+        ],
+        "before_hash": "6252fcf88219bb444be7af3310272e01986c373e993d99f69a34b7ccb0e2492b",
+        "after_hash": "7f550c85b22ca52eb5fc3dc63b143d836dc71183e9b2530fd8ddc8e087d7b89c"
+      },
+      {
+        "file": "Infra/warm.cc",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 149
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "3511a9f44cd6040f1b89ff10478f32c9915b30febb24d9eacbb42593f2a917ae"
+      },
+      {
+        "file": "Infra/warm.h",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 17
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "0ab492bd6b1adc43dabd2e34036295da85409fc32ab2abea8e5e63ca17fb4dc0"
+      }
+    ]
+  },
+  "timing": {
+    "started_at": "2026-09-08T18:09:38.250Z",
+    "completed_at": "2026-09-08T18:09:39.389Z",
+    "duration_ms": 1139,
+    "measurement": "hook_wall_clock"
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "model_calls": 0,
+    "measurement": "known-zero"
+  },
+  "telemetry": {
+    "schemaVersion": "mimosa-gate-telemetry/v1",
+    "profile": "gate",
+    "operation": "Stop",
+    "outcome": "partial/INCONCLUSIVE",
+    "latencyMs": 1139,
+    "peakMemoryBytes": 128077824,
+    "memoryMeasurement": "max-observed-process-rss",
+    "scannedFiles": 16,
+    "cache": {
+      "hits": 0,
+      "misses": 0,
+      "measurement": "not-applicable"
+    },
+    "denyCount": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "total": 0,
+      "modelCalls": 0,
+      "measurement": "known-zero"
+    }
+  },
+  "finding_count": 0,
+  "rewake_finding_count": 0,
+  "evidence_boundary": {
+    "scan": "candidate",
+    "static_fix_verification": "observed_static_only",
+    "runtime_verification": "not_performed"
+  },
+  "finding_events": [],
+  "findings": [],
+  "artifacts": {
+    "immutable_report": ".mimosa/reports/task-review-sess_c15afb39-c1b9-48c5-ad77-c6f949a69730-20260908T180939389Z-28936-5e1d1ea3ee7e.json",
+    "latest_report": ".mimosa/reports/task-review-sess_c15afb39-c1b9-48c5-ad77-c6f949a69730.json",
+    "history_summary": ".mimosa/history/run-20260908T180939389Z-28936-5e1d1ea3ee7e.json"
+  }
+}

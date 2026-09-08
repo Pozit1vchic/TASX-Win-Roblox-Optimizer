@@ -1,0 +1,789 @@
+{
+  "schema_version": "mimosa-task-review/v2",
+  "run_id": "20260908T155152067Z-27884-dea8730b2d4c",
+  "run_status": "completed",
+  "errors": [],
+  "coverage": {
+    "schema_version": "mimosa-hook-coverage/v1",
+    "status": "complete",
+    "scope": "hook_observed_diff",
+    "baseline": {
+      "complete": true,
+      "captured_files": 17,
+      "candidate_limit": 5000,
+      "truncated": false,
+      "enumeration_error_count": 0,
+      "snapshot_error_count": 0,
+      "compensated_target_count": 17
+    },
+    "change_tracking": {
+      "touched_observed": 17,
+      "touched_retained": 17,
+      "truncated": false,
+      "bash_mutation": true,
+      "bash_discovered": 17,
+      "bash_discovery_limit": 80,
+      "bash_discovery_truncated": false
+    },
+    "candidates": {
+      "eligible_files": 17,
+      "selected_files": 17,
+      "limit": 20,
+      "truncated": false
+    },
+    "scanning": {
+      "required_files": 17,
+      "scanned_files": 17,
+      "skipped_files": 0,
+      "failed_files": 0,
+      "project_checks_required": 0,
+      "project_checks_completed": 0
+    },
+    "notification": {
+      "eligible_findings": 0,
+      "detailed_findings": 0,
+      "detail_limit": 3,
+      "truncated": false
+    },
+    "reason_counts": {},
+    "reasons": [],
+    "reasons_truncated": false
+  },
+  "generated_at": "2026-09-08T15:51:52.067Z",
+  "session_id": "sess_c15afb39-c1b9-48c5-ad77-c6f949a69730",
+  "target": ".",
+  "revision": null,
+  "rules_version": "unavailable",
+  "diff_hash": "3f5b7c96bcd035ec6f432bd2ec1bdd41447b1331630dc987e7f56399c0a7b795",
+  "diff": {
+    "algorithm": "sha256",
+    "changed_file_count": 17,
+    "changed_files": [
+      {
+        "file": "Infra/config.c",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 203
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "425335b66b760366d4934db10a23a79cd7acc5832dbe1c78a812f5009895a046"
+      },
+      {
+        "file": "Infra/config.h",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 24
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "86d9ead2bbfc5b237c1ed9a02da3b15a9b43f1e9ca29ef27735b774560f9506c"
+      },
+      {
+        "file": "Infra/CPU.cc",
+        "ranges": [
+          {
+            "start": 5,
+            "end": 7
+          },
+          {
+            "start": 13,
+            "end": 13
+          },
+          {
+            "start": 15,
+            "end": 15
+          },
+          {
+            "start": 17,
+            "end": 21
+          },
+          {
+            "start": 23,
+            "end": 32
+          },
+          {
+            "start": 34,
+            "end": 38
+          },
+          {
+            "start": 41,
+            "end": 41
+          },
+          {
+            "start": 43,
+            "end": 46
+          },
+          {
+            "start": 48,
+            "end": 48
+          },
+          {
+            "start": 51,
+            "end": 56
+          },
+          {
+            "start": 59,
+            "end": 60
+          },
+          {
+            "start": 62,
+            "end": 79
+          },
+          {
+            "start": 83,
+            "end": 83
+          },
+          {
+            "start": 85,
+            "end": 92
+          },
+          {
+            "start": 94,
+            "end": 94
+          },
+          {
+            "start": 96,
+            "end": 99
+          },
+          {
+            "start": 101,
+            "end": 104
+          },
+          {
+            "start": 106,
+            "end": 114
+          },
+          {
+            "start": 117,
+            "end": 119
+          },
+          {
+            "start": 121,
+            "end": 122
+          },
+          {
+            "start": 125,
+            "end": 125
+          },
+          {
+            "start": 128,
+            "end": 128
+          },
+          {
+            "start": 130,
+            "end": 132
+          },
+          {
+            "start": 134,
+            "end": 138
+          },
+          {
+            "start": 140,
+            "end": 141
+          },
+          {
+            "start": 146,
+            "end": 146
+          },
+          {
+            "start": 150,
+            "end": 177
+          },
+          {
+            "start": 181,
+            "end": 197
+          },
+          {
+            "start": 200,
+            "end": 203
+          },
+          {
+            "start": 205,
+            "end": 206
+          },
+          {
+            "start": 208,
+            "end": 210
+          },
+          {
+            "start": 212,
+            "end": 212
+          }
+        ],
+        "before_hash": "75c4781da8a3c29d7e5e50b0546ec6af21d30a0d53896aca1ac64b64e913c049",
+        "after_hash": "9f54e9c86d3702e82509f3d9d955ed18af42c5a3aaf0f2bd578674679fb03d22"
+      },
+      {
+        "file": "Infra/CPU.h",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 2
+          },
+          {
+            "start": 5,
+            "end": 11
+          },
+          {
+            "start": 13,
+            "end": 14
+          },
+          {
+            "start": 16,
+            "end": 17
+          }
+        ],
+        "before_hash": "5b0801b6087351b2f9ad5d21a7b2a23b87f3fb0f0afa47b746db3e95aed83068",
+        "after_hash": "396d45add66b36c9e09fb40f4f8c15a4f0ef938172dd52bf4a0ac14dfa65275f"
+      },
+      {
+        "file": "Infra/fflags.cc",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 228
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "967d82a4f1cefefd671f71627a2330232b3a584c5bda94892b695b17c474ea38"
+      },
+      {
+        "file": "Infra/fflags.h",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 8
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "d1049dc3dea6fe052abce4c1d2ae08e476b54de57b24dcc82482b12cb0e24fde"
+      },
+      {
+        "file": "Infra/master.cpp",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 3
+          },
+          {
+            "start": 6,
+            "end": 8
+          },
+          {
+            "start": 15,
+            "end": 15
+          },
+          {
+            "start": 17,
+            "end": 64
+          },
+          {
+            "start": 66,
+            "end": 78
+          },
+          {
+            "start": 80,
+            "end": 80
+          },
+          {
+            "start": 93,
+            "end": 95
+          },
+          {
+            "start": 113,
+            "end": 116
+          },
+          {
+            "start": 118,
+            "end": 118
+          },
+          {
+            "start": 125,
+            "end": 130
+          },
+          {
+            "start": 132,
+            "end": 134
+          },
+          {
+            "start": 136,
+            "end": 137
+          },
+          {
+            "start": 139,
+            "end": 141
+          },
+          {
+            "start": 143,
+            "end": 152
+          },
+          {
+            "start": 154,
+            "end": 154
+          },
+          {
+            "start": 156,
+            "end": 160
+          },
+          {
+            "start": 173,
+            "end": 173
+          },
+          {
+            "start": 175,
+            "end": 176
+          },
+          {
+            "start": 187,
+            "end": 187
+          },
+          {
+            "start": 189,
+            "end": 191
+          },
+          {
+            "start": 193,
+            "end": 193
+          },
+          {
+            "start": 195,
+            "end": 202
+          },
+          {
+            "start": 204,
+            "end": 204
+          },
+          {
+            "start": 206,
+            "end": 217
+          },
+          {
+            "start": 219,
+            "end": 221
+          },
+          {
+            "start": 224,
+            "end": 226
+          },
+          {
+            "start": 228,
+            "end": 233
+          },
+          {
+            "start": 235,
+            "end": 240
+          },
+          {
+            "start": 242,
+            "end": 245
+          },
+          {
+            "start": 247,
+            "end": 250
+          },
+          {
+            "start": 253,
+            "end": 256
+          },
+          {
+            "start": 259,
+            "end": 267
+          },
+          {
+            "start": 269,
+            "end": 269
+          },
+          {
+            "start": 271,
+            "end": 300
+          },
+          {
+            "start": 302,
+            "end": 310
+          },
+          {
+            "start": 313,
+            "end": 324
+          },
+          {
+            "start": 327,
+            "end": 334
+          },
+          {
+            "start": 337,
+            "end": 338
+          },
+          {
+            "start": 340,
+            "end": 343
+          },
+          {
+            "start": 345,
+            "end": 363
+          }
+        ],
+        "before_hash": "dfeb8adaf038d5435558163a3d2468b92c01b1ae32e6a555e55665c8f0d34d4c",
+        "after_hash": "e645c483ddcc245e87c76f7602b1b97243713241eb65bc0bfc1262602b8c1f1a"
+      },
+      {
+        "file": "Infra/ntsys.c",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 242
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "26a32d83b2cbf936320f4f69fbaec72f2574d8a0d04f9605fcf99fa866009f88"
+      },
+      {
+        "file": "Infra/ntsys.h",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 47
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "903203c7621596d7d3125f3e11214cf57b710f950d49f9e013a2c5a9d7792faf"
+      },
+      {
+        "file": "Infra/trimmer.cc",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 4
+          },
+          {
+            "start": 13,
+            "end": 13
+          },
+          {
+            "start": 15,
+            "end": 23
+          },
+          {
+            "start": 27,
+            "end": 29
+          },
+          {
+            "start": 32,
+            "end": 33
+          },
+          {
+            "start": 38,
+            "end": 38
+          },
+          {
+            "start": 42,
+            "end": 43
+          },
+          {
+            "start": 45,
+            "end": 46
+          },
+          {
+            "start": 48,
+            "end": 49
+          },
+          {
+            "start": 51,
+            "end": 57
+          },
+          {
+            "start": 60,
+            "end": 64
+          },
+          {
+            "start": 66,
+            "end": 72
+          },
+          {
+            "start": 75,
+            "end": 75
+          },
+          {
+            "start": 78,
+            "end": 79
+          },
+          {
+            "start": 86,
+            "end": 87
+          },
+          {
+            "start": 89,
+            "end": 90
+          },
+          {
+            "start": 92,
+            "end": 101
+          },
+          {
+            "start": 104,
+            "end": 104
+          },
+          {
+            "start": 106,
+            "end": 108
+          },
+          {
+            "start": 113,
+            "end": 117
+          },
+          {
+            "start": 119,
+            "end": 119
+          },
+          {
+            "start": 121,
+            "end": 123
+          },
+          {
+            "start": 125,
+            "end": 133
+          }
+        ],
+        "before_hash": "afd42e69680356052dbc571db53129f197c0038dbc7c136f32dc476ff9bf1c67",
+        "after_hash": "e749e58d7c5cf4901f3013379d7f801434ca0b8cd00a221c01814b975d71d06c"
+      },
+      {
+        "file": "Infra/trimmer.h",
+        "ranges": [
+          {
+            "start": 3,
+            "end": 7
+          },
+          {
+            "start": 10,
+            "end": 13
+          }
+        ],
+        "before_hash": "ec764c6228ad9904f16e4a85c3387e970ba234a783b664bd853c9fdd83e40aa8",
+        "after_hash": "317f6bf730a9d812f246e891bdb7989ec8f96a2c0602d5a3ff7f05ee237f7883"
+      },
+      {
+        "file": "Infra/tweaks.cc",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 186
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "d91d889bdb488f543b7bf175d0b53b66a28d02e4697823298bd8e16664555c68"
+      },
+      {
+        "file": "Infra/tweaks.h",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 13
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "978769b9b5ea89af1b50535514468e21c66b2fe1b7cd655215ecf131b497a01e"
+      },
+      {
+        "file": "Infra/winhook.cc",
+        "ranges": [
+          {
+            "start": 3,
+            "end": 14
+          },
+          {
+            "start": 18,
+            "end": 51
+          },
+          {
+            "start": 55,
+            "end": 57
+          },
+          {
+            "start": 59,
+            "end": 61
+          }
+        ],
+        "before_hash": "cb4744eecba3bd7cd4ae0bc8c2d44dadbefc5b629314ff2bcc0017c08fa38c36",
+        "after_hash": "84fe46a6525b7a9763f20fbda9b204bc5d93be8b220fa388536b5761cba7ddcc"
+      },
+      {
+        "file": "Infra/winhook.h",
+        "ranges": [
+          {
+            "start": 2,
+            "end": 3
+          },
+          {
+            "start": 6,
+            "end": 8
+          },
+          {
+            "start": 11,
+            "end": 11
+          },
+          {
+            "start": 14,
+            "end": 21
+          },
+          {
+            "start": 24,
+            "end": 26
+          },
+          {
+            "start": 30,
+            "end": 34
+          }
+        ],
+        "before_hash": "5bfe1ca25c53d56abb0bf55b3e421c325dde809d5a57388395aa1aba5ef40c6f",
+        "after_hash": "f50ae1bbee6b97a581176d83d7a831da4bb739d1814d7e9e430f0dc14b32bf84"
+      },
+      {
+        "file": "Infra/WMI.cc",
+        "ranges": [
+          {
+            "start": 16,
+            "end": 16
+          },
+          {
+            "start": 51,
+            "end": 54
+          },
+          {
+            "start": 66,
+            "end": 68
+          },
+          {
+            "start": 81,
+            "end": 81
+          },
+          {
+            "start": 97,
+            "end": 97
+          },
+          {
+            "start": 109,
+            "end": 109
+          },
+          {
+            "start": 119,
+            "end": 119
+          },
+          {
+            "start": 125,
+            "end": 125
+          },
+          {
+            "start": 142,
+            "end": 142
+          },
+          {
+            "start": 152,
+            "end": 153
+          },
+          {
+            "start": 158,
+            "end": 159
+          },
+          {
+            "start": 165,
+            "end": 166
+          },
+          {
+            "start": 178,
+            "end": 179
+          },
+          {
+            "start": 185,
+            "end": 187
+          },
+          {
+            "start": 195,
+            "end": 195
+          },
+          {
+            "start": 220,
+            "end": 220
+          }
+        ],
+        "before_hash": "e809ab7142d7ca692125d2427467be8b07071147035f9b3c133d2c0945777d54",
+        "after_hash": "dab461548c0604da68a756be94256fdd691121fe1de1d49312684cc040a0b74b"
+      },
+      {
+        "file": "Infra/WMI.h",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 1
+          },
+          {
+            "start": 3,
+            "end": 5
+          },
+          {
+            "start": 8,
+            "end": 8
+          },
+          {
+            "start": 10,
+            "end": 11
+          }
+        ],
+        "before_hash": "e8bee84ae34025e632ba4a73914ab398ca169a2978f34e7695de31356248d345",
+        "after_hash": "63585758b3e56fbead6393767162397c968f1bdb19e35b1ea7047bceecfe6aef"
+      }
+    ]
+  },
+  "timing": {
+    "started_at": "2026-09-08T15:51:51.147Z",
+    "completed_at": "2026-09-08T15:51:52.067Z",
+    "duration_ms": 920,
+    "measurement": "hook_wall_clock"
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "model_calls": 0,
+    "measurement": "known-zero"
+  },
+  "telemetry": {
+    "schemaVersion": "mimosa-gate-telemetry/v1",
+    "profile": "gate",
+    "operation": "Stop",
+    "outcome": "complete",
+    "latencyMs": 920,
+    "peakMemoryBytes": 128229376,
+    "memoryMeasurement": "max-observed-process-rss",
+    "scannedFiles": 17,
+    "cache": {
+      "hits": 0,
+      "misses": 0,
+      "measurement": "not-applicable"
+    },
+    "denyCount": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "total": 0,
+      "modelCalls": 0,
+      "measurement": "known-zero"
+    }
+  },
+  "finding_count": 0,
+  "rewake_finding_count": 0,
+  "evidence_boundary": {
+    "scan": "candidate",
+    "static_fix_verification": "observed_static_only",
+    "runtime_verification": "not_performed"
+  },
+  "finding_events": [],
+  "findings": [],
+  "artifacts": {
+    "immutable_report": ".mimosa/reports/task-review-sess_c15afb39-c1b9-48c5-ad77-c6f949a69730-20260908T155152067Z-27884-dea8730b2d4c.json",
+    "latest_report": ".mimosa/reports/task-review-sess_c15afb39-c1b9-48c5-ad77-c6f949a69730.json",
+    "history_summary": ".mimosa/history/run-20260908T155152067Z-27884-dea8730b2d4c.json"
+  }
+}

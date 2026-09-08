@@ -1,0 +1,89 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260908T170329903Z-30472-3fc23a7d61e1",
+  "runId": "20260908T170329903Z-30472-3fc23a7d61e1",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": null,
+  "diffHash": "5392dde4c132c0d381f5881c3d737ac3048cdc0b7524428129ce15eecb74d564",
+  "rulesVersion": "unavailable",
+  "sessionHash": "78aa92df79f18f4d219cbf1436043e63fee3fea7f742b73f8f8e24ee39dcf22e",
+  "reportRef": ".mimosa/reports/task-review-sess_c15afb39-c1b9-48c5-ad77-c6f949a69730-20260908T170329903Z-30472-3fc23a7d61e1.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "Infra/ntsys.h",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "Infra/ntsys.c",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "Infra/stats.h",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "Infra/stats.cc",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "Infra/CPU.h",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "Infra/CPU.cc",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "Infra/jobs.h",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "Infra/jobs.cc",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "Infra/trimmer.h",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "Infra/trimmer.cc",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "Infra/WMI.h",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "Infra/WMI.cc",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "Infra/master.cpp",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-09-08T17:03:30.159Z"
+}

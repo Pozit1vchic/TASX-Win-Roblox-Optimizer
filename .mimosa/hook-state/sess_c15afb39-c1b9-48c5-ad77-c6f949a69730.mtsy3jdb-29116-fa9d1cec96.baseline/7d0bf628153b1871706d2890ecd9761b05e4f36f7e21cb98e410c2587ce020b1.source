@@ -1,0 +1,185 @@
+#include "jobs.h"
+
+#include "CPU.h"
+#include "config.h"
+
+#include <iostream>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
+
+#ifndef JOB_OBJECT_MSG_EXIT_PROCESS
+#define JOB_OBJECT_MSG_EXIT_PROCESS 7
+#endif
+#ifndef JOB_OBJECT_MSG_NEW_PROCESS
+#define JOB_OBJECT_MSG_NEW_PROCESS 6
+#endif
+
+namespace {
+
+std::mutex g_jobsMtx;
+std::unordered_map<DWORD, HANDLE> g_jobs;
+HANDLE g_iocp = nullptr;
+std::thread g_iocpThread;
+
+bool ApplyJobLimits(HANDLE job, bool focused)
+{
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION ext{};
+    ext.BasicLimitInformation.LimitFlags =
+        JOB_OBJECT_LIMIT_PRIORITY_CLASS | JOB_OBJECT_LIMIT_AFFINITY;
+
+    if (focused) {
+        ext.BasicLimitInformation.PriorityClass = HIGH_PRIORITY_CLASS;
+        ext.BasicLimitInformation.Affinity = CpuAllMask();
+    }
+    else {
+        ext.BasicLimitInformation.PriorityClass = IDLE_PRIORITY_CLASS;
+        DWORD_PTR bg = CpuBackgroundMask();
+        ext.BasicLimitInformation.Affinity = bg ? bg : CpuAllMask();
+
+        int memCap = config_get_int("TASX", "JobMemoryCapMB", 0);
+        if (memCap > 0) {
+            ext.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+            ext.ProcessMemoryLimit = (SIZE_T)memCap << 20;
+        }
+    }
+
+    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation,
+                                 &ext, sizeof(ext)))
+        return false;
+
+    if (!focused) {
+        int cpuCap = config_get_int("TASX", "JobCpuCapPercent", 0);
+        if (cpuCap > 0 && cpuCap < 100) {
+            JOBOBJECT_CPU_RATE_CONTROL_INFORMATION crc{};
+            crc.ControlFlags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE
+                             | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+            crc.CpuRate = (DWORD)cpuCap * 100; /* percent*100 of total CPU */
+            SetInformationJobObject(job, JobObjectCpuRateControlInformation,
+                                    &crc, sizeof(crc));
+        }
+    }
+    return true;
+}
+
+void IocpLoop()
+{
+    for (;;)
+    {
+        DWORD code = 0;
+        ULONG_PTR key = 0;
+        ULONG_PTR msg = 0;
+
+        if (!GetQueuedCompletionStatus(g_iocp, &code, &key,
+                                       (LPOVERLAPPED*)&msg, INFINITE))
+        {
+            if (GetLastError() == WAIT_TIMEOUT) continue;
+            break; /* port closed -> shutdown */
+        }
+
+        DWORD pid = (DWORD)key; /* CompletionKey = tracked client pid */
+
+        if (code == JOB_OBJECT_MSG_EXIT_PROCESS) {
+            TasxNotifyJobEvent(1, pid);
+        }
+        else if (code == JOB_OBJECT_MSG_NEW_PROCESS) {
+            /* msg = pid of the newly created process inside the job.
+               The tracked client itself also reports here on assignment. */
+            DWORD child = (DWORD)msg;
+            if (child != pid)
+                TasxNotifyJobEvent(2, child);
+        }
+    }
+}
+
+} /* namespace */
+
+bool JobsInit()
+{
+    if (g_iocp) return true;
+
+    g_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1);
+    if (!g_iocp) {
+        std::cout << "[Jobs] Failed to create completion port | Code: "
+                  << GetLastError() << std::endl;
+        return false;
+    }
+
+    g_iocpThread = std::thread(IocpLoop);
+    std::cout << "[Jobs] Job layer ready (completion port active)" << std::endl;
+    return true;
+}
+
+bool JobHookProcess(DWORD pid, HANDLE hProc)
+{
+    std::lock_guard<std::mutex> lock(g_jobsMtx);
+
+    if (g_jobs.count(pid)) return true;
+    if (!g_iocp) return false;
+
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    if (!job) return false;
+
+    if (!ApplyJobLimits(job, false)) {
+        std::cout << "[Jobs] PID " << pid
+                  << " job limits rejected | Code: " << GetLastError()
+                  << std::endl;
+        CloseHandle(job);
+        return false;
+    }
+
+    JOBOBJECT_ASSOCIATE_COMPLETION_PORT acp{};
+    acp.CompletionPort = g_iocp;
+    acp.CompletionKey = (PVOID)(ULONG_PTR)pid;
+    if (!SetInformationJobObject(job, JobObjectAssociateCompletionPortInformation,
+                                 &acp, sizeof(acp))) {
+        CloseHandle(job);
+        return false;
+    }
+
+    if (!AssignProcessToJobObject(job, hProc)) {
+        std::cout << "[Jobs] PID " << pid
+                  << " job assignment failed | Code: " << GetLastError()
+                  << " -> per-process fallback" << std::endl;
+        CloseHandle(job);
+        return false;
+    }
+
+    g_jobs[pid] = job;
+    return true;
+}
+
+bool JobApplyProfile(DWORD pid, int focused)
+{
+    std::lock_guard<std::mutex> lock(g_jobsMtx);
+
+    auto it = g_jobs.find(pid);
+    if (it == g_jobs.end()) return false;
+    return ApplyJobLimits(it->second, focused != 0);
+}
+
+void JobRelease(DWORD pid)
+{
+    std::lock_guard<std::mutex> lock(g_jobsMtx);
+
+    auto it = g_jobs.find(pid);
+    if (it == g_jobs.end()) return;
+    CloseHandle(it->second);
+    g_jobs.erase(it);
+}
+
+void JobShutdown()
+{
+    {
+        std::lock_guard<std::mutex> lock(g_jobsMtx);
+        for (auto& kv : g_jobs) CloseHandle(kv.second);
+        g_jobs.clear();
+    }
+
+    if (g_iocp) {
+        CloseHandle(g_iocp); /* unblocks IocpLoop */
+        g_iocp = nullptr;
+    }
+    if (g_iocpThread.joinable())
+        g_iocpThread.join();
+}

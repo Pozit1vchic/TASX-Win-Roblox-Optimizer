@@ -1,0 +1,637 @@
+{
+  "schema_version": "mimosa-task-review/v2",
+  "run_id": "20260908T170329903Z-30472-3fc23a7d61e1",
+  "run_status": "completed",
+  "errors": [],
+  "coverage": {
+    "schema_version": "mimosa-hook-coverage/v1",
+    "status": "complete",
+    "scope": "hook_observed_diff",
+    "baseline": {
+      "complete": true,
+      "captured_files": 21,
+      "candidate_limit": 5000,
+      "truncated": false,
+      "enumeration_error_count": 0,
+      "snapshot_error_count": 0,
+      "compensated_target_count": 13
+    },
+    "change_tracking": {
+      "touched_observed": 13,
+      "touched_retained": 13,
+      "truncated": false,
+      "bash_mutation": true,
+      "bash_discovered": 13,
+      "bash_discovery_limit": 80,
+      "bash_discovery_truncated": false
+    },
+    "candidates": {
+      "eligible_files": 13,
+      "selected_files": 13,
+      "limit": 20,
+      "truncated": false
+    },
+    "scanning": {
+      "required_files": 13,
+      "scanned_files": 13,
+      "skipped_files": 0,
+      "failed_files": 0,
+      "project_checks_required": 0,
+      "project_checks_completed": 0
+    },
+    "notification": {
+      "eligible_findings": 0,
+      "detailed_findings": 0,
+      "detail_limit": 3,
+      "truncated": false
+    },
+    "reason_counts": {},
+    "reasons": [],
+    "reasons_truncated": false
+  },
+  "generated_at": "2026-09-08T17:03:29.903Z",
+  "session_id": "sess_c15afb39-c1b9-48c5-ad77-c6f949a69730",
+  "target": ".",
+  "revision": null,
+  "rules_version": "unavailable",
+  "diff_hash": "5392dde4c132c0d381f5881c3d737ac3048cdc0b7524428129ce15eecb74d564",
+  "diff": {
+    "algorithm": "sha256",
+    "changed_file_count": 13,
+    "changed_files": [
+      {
+        "file": "Infra/CPU.cc",
+        "ranges": [
+          {
+            "start": 125,
+            "end": 134
+          }
+        ],
+        "before_hash": "3c4cf4d0cd89b846f95f82f6311bcf0dee6eb902d264240d37b0ef86402e6666",
+        "after_hash": "bc54e5f2c332beab04e4c456238e18e208eab514aa73c6c88c58c97ed2254430"
+      },
+      {
+        "file": "Infra/CPU.h",
+        "ranges": [
+          {
+            "start": 18,
+            "end": 23
+          }
+        ],
+        "before_hash": "396d45add66b36c9e09fb40f4f8c15a4f0ef938172dd52bf4a0ac14dfa65275f",
+        "after_hash": "8710ab04b10e921a786f2d327b34c96dd0390a669b848388d80890068605e8f2"
+      },
+      {
+        "file": "Infra/jobs.cc",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 185
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "eb3177f90a09925684e93d02b342cf665650589d31bd85d018f63d566e08f211"
+      },
+      {
+        "file": "Infra/jobs.h",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 28
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "d726a9cc02162bdddd04244322bf70f92eb44dc6af7f967cb8ed0da66c9251d3"
+      },
+      {
+        "file": "Infra/master.cpp",
+        "ranges": [
+          {
+            "start": 3,
+            "end": 4
+          },
+          {
+            "start": 25,
+            "end": 26
+          },
+          {
+            "start": 29,
+            "end": 31
+          },
+          {
+            "start": 36,
+            "end": 42
+          },
+          {
+            "start": 45,
+            "end": 45
+          },
+          {
+            "start": 47,
+            "end": 47
+          },
+          {
+            "start": 51,
+            "end": 51
+          },
+          {
+            "start": 56,
+            "end": 56
+          },
+          {
+            "start": 63,
+            "end": 63
+          },
+          {
+            "start": 70,
+            "end": 71
+          },
+          {
+            "start": 73,
+            "end": 78
+          },
+          {
+            "start": 83,
+            "end": 83
+          },
+          {
+            "start": 97,
+            "end": 97
+          },
+          {
+            "start": 99,
+            "end": 103
+          },
+          {
+            "start": 106,
+            "end": 106
+          },
+          {
+            "start": 108,
+            "end": 110
+          },
+          {
+            "start": 112,
+            "end": 124
+          },
+          {
+            "start": 126,
+            "end": 138
+          },
+          {
+            "start": 140,
+            "end": 153
+          },
+          {
+            "start": 155,
+            "end": 156
+          },
+          {
+            "start": 158,
+            "end": 159
+          },
+          {
+            "start": 162,
+            "end": 162
+          },
+          {
+            "start": 164,
+            "end": 165
+          },
+          {
+            "start": 167,
+            "end": 177
+          },
+          {
+            "start": 179,
+            "end": 179
+          },
+          {
+            "start": 181,
+            "end": 191
+          },
+          {
+            "start": 194,
+            "end": 194
+          },
+          {
+            "start": 196,
+            "end": 197
+          },
+          {
+            "start": 199,
+            "end": 200
+          },
+          {
+            "start": 202,
+            "end": 205
+          },
+          {
+            "start": 207,
+            "end": 216
+          },
+          {
+            "start": 226,
+            "end": 226
+          },
+          {
+            "start": 235,
+            "end": 238
+          },
+          {
+            "start": 243,
+            "end": 249
+          },
+          {
+            "start": 259,
+            "end": 262
+          },
+          {
+            "start": 270,
+            "end": 273
+          },
+          {
+            "start": 276,
+            "end": 276
+          },
+          {
+            "start": 279,
+            "end": 280
+          },
+          {
+            "start": 283,
+            "end": 283
+          },
+          {
+            "start": 288,
+            "end": 290
+          },
+          {
+            "start": 296,
+            "end": 297
+          },
+          {
+            "start": 320,
+            "end": 321
+          },
+          {
+            "start": 323,
+            "end": 358
+          },
+          {
+            "start": 403,
+            "end": 404
+          },
+          {
+            "start": 406,
+            "end": 406
+          },
+          {
+            "start": 412,
+            "end": 414
+          },
+          {
+            "start": 420,
+            "end": 421
+          },
+          {
+            "start": 427,
+            "end": 439
+          },
+          {
+            "start": 445,
+            "end": 454
+          },
+          {
+            "start": 457,
+            "end": 458
+          },
+          {
+            "start": 463,
+            "end": 463
+          }
+        ],
+        "before_hash": "3aaf3176b8c2269d8865af3a5e71e7f521256ad207453f6c63eeb01a18c99f90",
+        "after_hash": "00d8fa503319014970223fa8fbe91d50485ced16983590292bda09530db14119"
+      },
+      {
+        "file": "Infra/ntsys.c",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 2
+          },
+          {
+            "start": 7,
+            "end": 7
+          },
+          {
+            "start": 23,
+            "end": 26
+          },
+          {
+            "start": 248,
+            "end": 274
+          }
+        ],
+        "before_hash": "26a32d83b2cbf936320f4f69fbaec72f2574d8a0d04f9605fcf99fa866009f88",
+        "after_hash": "0430c360fe7f8b80f530cb2e0303f1e945c2e6372c40b01094136f3fc1709cf7"
+      },
+      {
+        "file": "Infra/ntsys.h",
+        "ranges": [
+          {
+            "start": 45,
+            "end": 91
+          }
+        ],
+        "before_hash": "903203c7621596d7d3125f3e11214cf57b710f950d49f9e013a2c5a9d7792faf",
+        "after_hash": "87b4742373a92a1497f6b3f74ac9d39490b6795610529859569432eec55906ee"
+      },
+      {
+        "file": "Infra/stats.cc",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 36
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "7706a713f5bd8cd5da9dbf6e23f6cd3f7fa56911c031fd8416d4d2d7c47bb13b"
+      },
+      {
+        "file": "Infra/stats.h",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 18
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "0cba35c460aa58871c322b32157c0727785273f7a62b87e11485402c203b109a"
+      },
+      {
+        "file": "Infra/trimmer.cc",
+        "ranges": [
+          {
+            "start": 5,
+            "end": 5
+          },
+          {
+            "start": 8,
+            "end": 9
+          },
+          {
+            "start": 11,
+            "end": 13
+          },
+          {
+            "start": 16,
+            "end": 18
+          },
+          {
+            "start": 21,
+            "end": 43
+          },
+          {
+            "start": 45,
+            "end": 45
+          },
+          {
+            "start": 47,
+            "end": 49
+          },
+          {
+            "start": 52,
+            "end": 53
+          },
+          {
+            "start": 55,
+            "end": 55
+          },
+          {
+            "start": 57,
+            "end": 58
+          },
+          {
+            "start": 60,
+            "end": 64
+          },
+          {
+            "start": 66,
+            "end": 70
+          },
+          {
+            "start": 72,
+            "end": 76
+          },
+          {
+            "start": 78,
+            "end": 81
+          },
+          {
+            "start": 83,
+            "end": 84
+          },
+          {
+            "start": 86,
+            "end": 96
+          },
+          {
+            "start": 98,
+            "end": 104
+          },
+          {
+            "start": 107,
+            "end": 109
+          },
+          {
+            "start": 111,
+            "end": 112
+          },
+          {
+            "start": 114,
+            "end": 116
+          },
+          {
+            "start": 118,
+            "end": 118
+          },
+          {
+            "start": 120,
+            "end": 124
+          },
+          {
+            "start": 126,
+            "end": 140
+          },
+          {
+            "start": 142,
+            "end": 146
+          },
+          {
+            "start": 149,
+            "end": 157
+          },
+          {
+            "start": 159,
+            "end": 159
+          },
+          {
+            "start": 161,
+            "end": 165
+          },
+          {
+            "start": 168,
+            "end": 168
+          },
+          {
+            "start": 170,
+            "end": 171
+          },
+          {
+            "start": 173,
+            "end": 173
+          },
+          {
+            "start": 175,
+            "end": 176
+          },
+          {
+            "start": 178,
+            "end": 190
+          },
+          {
+            "start": 192,
+            "end": 196
+          },
+          {
+            "start": 198,
+            "end": 201
+          },
+          {
+            "start": 203,
+            "end": 207
+          },
+          {
+            "start": 210,
+            "end": 220
+          }
+        ],
+        "before_hash": "e749e58d7c5cf4901f3013379d7f801434ca0b8cd00a221c01814b975d71d06c",
+        "after_hash": "6671d60324e82ba77b7a240e7b7827414eafe661fcad3322ffd136795e0b8b18"
+      },
+      {
+        "file": "Infra/trimmer.h",
+        "ranges": [
+          {
+            "start": 5,
+            "end": 11
+          },
+          {
+            "start": 18,
+            "end": 21
+          }
+        ],
+        "before_hash": "317f6bf730a9d812f246e891bdb7989ec8f96a2c0602d5a3ff7f05ee237f7883",
+        "after_hash": "fc541f80e2457dfe4ef79135f77f4dc6fc56c840fe88cf87808868ef7e84516e"
+      },
+      {
+        "file": "Infra/WMI.cc",
+        "ranges": [
+          {
+            "start": 44,
+            "end": 44
+          },
+          {
+            "start": 47,
+            "end": 49
+          },
+          {
+            "start": 51,
+            "end": 52
+          },
+          {
+            "start": 54,
+            "end": 62
+          },
+          {
+            "start": 64,
+            "end": 74
+          },
+          {
+            "start": 76,
+            "end": 79
+          }
+        ],
+        "before_hash": "dab461548c0604da68a756be94256fdd691121fe1de1d49312684cc040a0b74b",
+        "after_hash": "c56eeac480b9a46cafe254404f26fc9fe9b923322f758d5dbfd807a3311db640"
+      },
+      {
+        "file": "Infra/WMI.h",
+        "ranges": [
+          {
+            "start": 4,
+            "end": 6
+          },
+          {
+            "start": 12,
+            "end": 12
+          }
+        ],
+        "before_hash": "63585758b3e56fbead6393767162397c968f1bdb19e35b1ea7047bceecfe6aef",
+        "after_hash": "db4651b1f7c626fa9a0e1596303266d4e2fca801b018a653c56144960054a562"
+      }
+    ]
+  },
+  "timing": {
+    "started_at": "2026-09-08T17:03:29.065Z",
+    "completed_at": "2026-09-08T17:03:29.903Z",
+    "duration_ms": 838,
+    "measurement": "hook_wall_clock"
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "model_calls": 0,
+    "measurement": "known-zero"
+  },
+  "telemetry": {
+    "schemaVersion": "mimosa-gate-telemetry/v1",
+    "profile": "gate",
+    "operation": "Stop",
+    "outcome": "complete",
+    "latencyMs": 838,
+    "peakMemoryBytes": 127971328,
+    "memoryMeasurement": "max-observed-process-rss",
+    "scannedFiles": 13,
+    "cache": {
+      "hits": 0,
+      "misses": 0,
+      "measurement": "not-applicable"
+    },
+    "denyCount": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "total": 0,
+      "modelCalls": 0,
+      "measurement": "known-zero"
+    }
+  },
+  "finding_count": 0,
+  "rewake_finding_count": 0,
+  "evidence_boundary": {
+    "scan": "candidate",
+    "static_fix_verification": "observed_static_only",
+    "runtime_verification": "not_performed"
+  },
+  "finding_events": [],
+  "findings": [],
+  "artifacts": {
+    "immutable_report": ".mimosa/reports/task-review-sess_c15afb39-c1b9-48c5-ad77-c6f949a69730-20260908T170329903Z-30472-3fc23a7d61e1.json",
+    "latest_report": ".mimosa/reports/task-review-sess_c15afb39-c1b9-48c5-ad77-c6f949a69730.json",
+    "history_summary": ".mimosa/history/run-20260908T170329903Z-30472-3fc23a7d61e1.json"
+  }
+}

@@ -3,3 +3,4 @@
 **/Release
 **/RAZR
 **/.vs
+*.o

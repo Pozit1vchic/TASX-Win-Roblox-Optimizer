@@ -24,12 +24,6 @@
 #include "fflags.h"
 #include "jobs.h"
 #include "stats.h"
-#include "audio.h"
-#include "warm.h"
-#include "desktop.h"
-#include "netcache.h"
-
-#include <unordered_set>
 
 /* ------------------------------------------------------------------ */
 /* Event core — WMI, job completion port, foreground hook and the       */
@@ -115,14 +109,6 @@ bool IsRobloxName(const std::wstring& name)
            name == L"Roblox.exe" || NameContains(name, L"\\roblox.exe");
 }
 
-std::unordered_set<DWORD> ClientPidSet()
-{
-    std::unordered_set<DWORD> pids;
-    pids.reserve(g_rbxHandles.size());
-    for (auto& kv : g_rbxHandles) pids.insert(kv.first);
-    return pids;
-}
-
 std::wstring QueryProcessName(DWORD pid)
 {
     HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
@@ -171,10 +157,6 @@ void HookClient(DWORD pid)
     }
 
     StartTrimmer(pid, hProc);
-
-    /* Prime the shared file-backed pages (image/dll/pak) once - every
-       instance of the same version then faults in from cache. */
-    WarmClientFilesAsync(pid);
 }
 
 void ReleaseClient(DWORD pid, bool logExit)
@@ -282,10 +264,6 @@ void ApplyFocusIfChanged()
         TrimmerSetFocused(0);
         g_appliedFocus = 0;
     }
-
-    /* Audio + dynamic P/E policy follow the same focus signal. */
-    AudioApplyBackgroundMute(ClientPidSet(), g_appliedFocus);
-    JobsRefreshDynamic(g_appliedFocus != 0);
 }
 
 /* Timer resolution: 0.5 ms tick while Roblox is running -> smoother frame
@@ -420,7 +398,6 @@ int RunTasx()
         CpuSetBoostMode(0);
     TweaksApplyOneShot();
     FFlagsApply();
-    NetCacheApply();       /* junction-shared client caches (config-gated) */
     SystemCleanPass(true); /* fresh Windows state right from the start */
 
     bool jobsOk = JobsInit();
@@ -475,18 +452,10 @@ int RunTasx()
             }
             for (DWORD pid : exited) ReleaseClient(pid, true);
             if (g_rbxHandles.empty()) { TimerOff(); TweaksPowerExit(); }
-
-            /* Per-client GDI/USER guard + audio session refresh (sessions
-               appear/disappear client-side without our knowledge). */
-            for (auto& kv : g_rbxHandles)
-                DesktopCheckClient(kv.first, kv.second);
-            AudioApplyBackgroundMute(ClientPidSet(), g_appliedFocus);
-            JobsRefreshDynamic(g_appliedFocus != 0);
         }
 
-        if (tick % 40 == 0) {            /* ~10 s: crash handlers + net */
+        if (tick % 40 == 0) {            /* ~10 s: crash-handler sweep */
             SweepCrashHandlers();
-            NetCacheLogConnections(ClientPidSet());
         }
     }
 

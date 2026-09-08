@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "mimosa-finding-history/v1",
+  "runId": "20260908T180939389Z-28936-5e1d1ea3ee7e",
+  "runStatus": "inconclusive",
+  "errors": [
+    "candidate-select:C:/Users/Petrunin Arsenii/AppData/Local/Temp/tt.c: changed_file_unreadable: observed changed file no longer exists or cannot be read",
+    "candidate-select:C:/Users/Petrunin Arsenii/AppData/Local/Temp/th.cpp: changed_file_unreadable: observed changed file no longer exists or cannot be read",
+    "candidate-select:C:/Users/Petrunin Arsenii/AppData/Local/Temp/big.cpp: changed_file_unreadable: observed changed file no longer exists or cannot be read",
+    "candidate-select:Infra/netcache_stub.cc: changed_file_unreadable: observed changed file no longer exists or cannot be read",
+    "candidate-select:Infra/stubs.cc: changed_file_unreadable: observed changed file no longer exists or cannot be read",
+    "candidate-select:Infra/min1.cc: changed_file_unreadable: observed changed file no longer exists or cannot be read",
+    "candidate-select:Infra/min2.cc: changed_file_unreadable: observed changed file no longer exists or cannot be read",
+    "candidate-select:C:/Users/Petrunin Arsenii/AppData/Local/Temp/chrono.cpp: changed_file_unreadable: observed changed file no longer exists or cannot be read"
+  ],
+  "target": ".",
+  "revision": null,
+  "diffHash": "4bfc89df92fde4d292285917d48414df85539ce59e841d4c45840b4fae74239f",
+  "rulesVersion": "unavailable",
+  "recordedAt": "2026-09-08T18:09:39.389Z",
+  "timing": {
+    "startedAt": "2026-09-08T18:09:38.250Z",
+    "completedAt": "2026-09-08T18:09:39.389Z",
+    "durationMs": 1139
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "modelCalls": 0,
+    "measurement": "known-zero"
+  },
+  "findings": {
+    "total": 0,
+    "bySeverity": {},
+    "byStatus": {}
+  },
+  "coverage": {
+    "status": "partial",
+    "reasonCounts": {
+      "changed_file_unreadable": 8,
+      "project_check_failed": 8
+    }
+  },
+  "evidenceBoundary": "static_only",
+  "immutableReport": ".mimosa/reports/task-review-sess_c15afb39-c1b9-48c5-ad77-c6f949a69730-20260908T180939389Z-28936-5e1d1ea3ee7e.json"
+}

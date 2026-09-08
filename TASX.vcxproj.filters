@@ -14,6 +14,36 @@
     <ClCompile Include="Infra\winhook.cc">
       <Filter>Infra\Core</Filter>
     </ClCompile>
+    <ClCompile Include="Infra\tweaks.cc">
+      <Filter>Infra\Core</Filter>
+    </ClCompile>
+    <ClCompile Include="Infra\fflags.cc">
+      <Filter>Infra\Core</Filter>
+    </ClCompile>
+    <ClCompile Include="Infra\config.c">
+      <Filter>Infra\Native</Filter>
+    </ClCompile>
+    <ClCompile Include="Infra\ntsys.c">
+      <Filter>Infra\Native</Filter>
+    </ClCompile>
+    <ClCompile Include="Infra\jobs.cc">
+      <Filter>Infra\Core</Filter>
+    </ClCompile>
+    <ClCompile Include="Infra\stats.cc">
+      <Filter>Infra\Core</Filter>
+    </ClCompile>
+    <ClCompile Include="Infra\audio.cc">
+      <Filter>Infra\Core</Filter>
+    </ClCompile>
+    <ClCompile Include="Infra\warm.cc">
+      <Filter>Infra\Core</Filter>
+    </ClCompile>
+    <ClCompile Include="Infra\desktop.cc">
+      <Filter>Infra\Core</Filter>
+    </ClCompile>
+    <ClCompile Include="Infra\netcache.cc">
+      <Filter>Infra\Core</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Infra\CPU.h">
@@ -28,6 +58,36 @@
     <ClInclude Include="Infra\winhook.h">
       <Filter>Infra\Header</Filter>
     </ClInclude>
+    <ClInclude Include="Infra\tweaks.h">
+      <Filter>Infra\Header</Filter>
+    </ClInclude>
+    <ClInclude Include="Infra\fflags.h">
+      <Filter>Infra\Header</Filter>
+    </ClInclude>
+    <ClInclude Include="Infra\config.h">
+      <Filter>Infra\Header</Filter>
+    </ClInclude>
+    <ClInclude Include="Infra\ntsys.h">
+      <Filter>Infra\Header</Filter>
+    </ClInclude>
+    <ClInclude Include="Infra\jobs.h">
+      <Filter>Infra\Header</Filter>
+    </ClInclude>
+    <ClInclude Include="Infra\stats.h">
+      <Filter>Infra\Header</Filter>
+    </ClInclude>
+    <ClInclude Include="Infra\audio.h">
+      <Filter>Infra\Header</Filter>
+    </ClInclude>
+    <ClInclude Include="Infra\warm.h">
+      <Filter>Infra\Header</Filter>
+    </ClInclude>
+    <ClInclude Include="Infra\desktop.h">
+      <Filter>Infra\Header</Filter>
+    </ClInclude>
+    <ClInclude Include="Infra\netcache.h">
+      <Filter>Infra\Header</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Infra">
@@ -38,6 +98,9 @@
     </Filter>
     <Filter Include="Infra\Header">
       <UniqueIdentifier>{70c28c59-97d0-4a6e-8221-b388d555af6d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Infra\Native">
+      <UniqueIdentifier>{a1d2e3f4-0b5c-4c6d-8e7f-9a0b1c2d3e4f}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>
