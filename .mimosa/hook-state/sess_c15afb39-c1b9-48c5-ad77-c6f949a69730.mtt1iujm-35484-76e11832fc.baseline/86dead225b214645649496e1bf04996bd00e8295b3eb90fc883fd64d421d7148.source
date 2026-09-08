@@ -161,9 +161,6 @@ bool CpuApplyFocusProfile(HANDLE hProcess, int focused)
     LogSummary();
 
     DWORD pid = GetProcessId(hProcess);
-    DWORD_PTR pMask = (DWORD_PTR)tasx_get_pcore_mask();
-    DWORD_PTR eMask = (DWORD_PTR)tasx_get_ecore_mask();
-    DWORD_PTR allMask = (DWORD_PTR)tasx_get_all_mask();
 
     if (focused) {
         if (!SetPriorityClass(hProcess, HIGH_PRIORITY_CLASS))
@@ -171,20 +168,21 @@ bool CpuApplyFocusProfile(HANDLE hProcess, int focused)
                       << " HIGH priority failed | Code: " << GetLastError()
                       << std::endl;
 
-        DWORD_PTR target = pMask ? pMask : allMask;
-        if (!target) target = g_allMask;
-        if (target && !SetProcessAffinityMask(hProcess, target))
+        /* All cores (P-cores are a subset of all; the scheduler parks
+           latency-critical work there first when nothing is restricted). */
+        if (g_allMask && !SetProcessAffinityMask(hProcess, g_allMask))
             std::cout << "[TASX] PID " << pid
-                      << " p-core affinity failed | Code: " << GetLastError()
+                      << " full affinity failed | Code: " << GetLastError()
                       << std::endl;
 
         /* Exempt from EcoQoS / power throttling — the focused game gets
-           the turbo it pays for (process-level only, no thread enumeration). */
+           the turbo it pays for. */
         tasx_process_power_throttling(hProcess, 0);
+        tasx_process_threads_power_throttling(hProcess, 0);
         tasx_set_memory_priority(hProcess, 5 /* Normal */);
 
         std::cout << "[TASX] PID " << pid
-                  << " -> FOCUSED profile (HIGH priority, p-cores, boost exempt)"
+                  << " -> FOCUSED profile (HIGH priority, all cores, boost exempt)"
                   << std::endl;
         return true;
     }
@@ -194,13 +192,14 @@ bool CpuApplyFocusProfile(HANDLE hProcess, int focused)
                   << " IDLE priority failed | Code: " << GetLastError()
                   << std::endl;
 
-    if (config_get_bool("TASX", "PinBackgroundToECores", 1)) {
-        DWORD_PTR bgMask = eMask ? eMask : g_lowHalfMask;
-        if (!bgMask) bgMask = g_lowHalfMask;
+    if (g_logical >= 12 && config_get_bool("TASX", "PinBackgroundToECores", 1)) {
+        DWORD_PTR bgMask = g_isHybrid && MaskBits(g_eMask) >= 2
+                               ? g_eMask
+                               : g_lowHalfMask;
         if (bgMask) {
             if (SetProcessAffinityMask(hProcess, bgMask))
                 std::cout << "[TASX] PID " << pid << " pinned to "
-                          << MaskBits(bgMask) << " background (E-)cores" << std::endl;
+                          << MaskBits(bgMask) << " background cores" << std::endl;
             else
                 std::cout << "[TASX] PID " << pid
                           << " affinity failed | Code: " << GetLastError()
@@ -208,14 +207,16 @@ bool CpuApplyFocusProfile(HANDLE hProcess, int focused)
         }
     }
 
-    /* Efficiency mode: process-level EcoQoS only (no per-thread enumeration). */
+    /* Efficiency mode: proper PROCESS_POWER_THROTTLING_STATE, plus legacy
+       per-thread pass so every existing thread is covered. */
     tasx_process_power_throttling(hProcess, 1);
+    tasx_process_threads_power_throttling(hProcess, 1);
 
     tasx_set_io_priority(hProcess, 0 /* VeryLow */);
     tasx_set_memory_priority(hProcess, 1 /* VeryLow */);
 
     std::cout << "[TASX] PID " << pid
-              << " -> BACKGROUND profile (IDLE, EcoQoS, E-cores, low I/O+mem)"
+              << " -> BACKGROUND profile (IDLE, efficiency mode, low I/O+mem priority)"
               << std::endl;
     return true;
 }

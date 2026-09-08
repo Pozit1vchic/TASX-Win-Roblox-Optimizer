@@ -47,58 +47,6 @@ bool EnsureSessionManager()
 
 } /* namespace */
 
-static bool SetMuteForPid(DWORD targetPid, BOOL mute)
-{
-    if (!EnsureSessionManager() || !g_mgr) return false;
-
-    IAudioSessionEnumerator* se = nullptr;
-    if (FAILED(g_mgr->GetSessionEnumerator(&se))) return false;
-
-    int count = 0;
-    se->GetCount(&count);
-    bool found = false;
-    for (int i = 0; i < count; ++i)
-    {
-        IAudioSessionControl* ctl = nullptr;
-        if (FAILED(se->GetSession(i, &ctl))) continue;
-        IAudioSessionControl2* ctl2 = nullptr;
-        if (SUCCEEDED(ctl->QueryInterface(k_IID_IAudioSessionControl2, (void**)&ctl2))) {
-            DWORD pid = 0;
-            ctl2->GetProcessId(&pid);
-            if (pid == targetPid) {
-                ISimpleAudioVolume* vol = nullptr;
-                if (SUCCEEDED(ctl2->QueryInterface(k_IID_ISimpleAudioVolume, (void**)&vol))) {
-                    vol->SetMute(mute, nullptr);
-                    vol->Release();
-                    found = true;
-                }
-            }
-            ctl2->Release();
-        }
-        ctl->Release();
-        if (found) break;
-    }
-    se->Release();
-    return found;
-}
-
-void AudioMuteByPid(DWORD pid)
-{
-    if (!pid) return;
-    if (!config_get_bool("TASX", "MuteBackground", 1)) return;
-    if (SetMuteForPid(pid, TRUE))
-        std::cout << "[Audio] Background client PID " << pid << " muted" << std::endl;
-}
-
-void AudioUnmuteByPid(DWORD pid)
-{
-    if (!pid) return;
-    if (!config_get_bool("TASX", "MuteBackground", 1)) return;
-    // Unmute even if MuteBackground was toggled off? We always unmute on focus.
-    if (SetMuteForPid(pid, FALSE))
-        std::cout << "[Audio] Client PID " << pid << " unmuted" << std::endl;
-}
-
 void AudioApplyBackgroundMute(const std::unordered_set<DWORD>& clientPids,
                               DWORD focusedPid)
 {

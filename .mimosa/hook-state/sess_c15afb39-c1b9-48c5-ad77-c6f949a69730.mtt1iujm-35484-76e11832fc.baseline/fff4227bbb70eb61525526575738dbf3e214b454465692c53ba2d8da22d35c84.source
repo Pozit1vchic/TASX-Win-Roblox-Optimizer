@@ -1,0 +1,23 @@
+#pragma once
+
+#include <windows.h>
+
+/* Applies the full TASX scheduling profile to a Roblox process:
+   focused   -> HIGH priority, all (P-)cores, throttling exempted,
+                normal I/O & memory priority.
+   background-> IDLE priority, E-cores (or the low half of the CPU),
+                efficiency mode + VeryLow I/O/memory priority.
+   Call again whenever focus changes; cheap when nothing changed. */
+bool CpuApplyFocusProfile(HANDLE hProcess, int focused);
+
+/* Global CPU boost toggle (system-wide power setting). */
+void CpuSetBoostMode(int enable);
+
+/* One-time topology discovery + console summary. */
+void CpuInit(void);
+
+/* Topology accessors for Job Object limits (init lazily). */
+DWORD_PTR CpuAllMask(void);        /* every logical CPU (group 0)        */
+DWORD_PTR CpuBackgroundMask(void); /* E-cores on hybrid, low half else   */
+int       CpuIsHybrid(void);
+DWORD     CpuLogicalCount(void);

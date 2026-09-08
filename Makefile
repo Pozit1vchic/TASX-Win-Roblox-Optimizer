@@ -12,16 +12,20 @@ HEADERS = Infra/CPU.h Infra/WMI.h Infra/trimmer.h Infra/winhook.h \
           Infra/desktop.h Infra/netcache.h
 
 OBJS = master.o CPU.o WMI.o trimmer.o winhook.o config.o ntsys.o tweaks.o fflags.o jobs.o stats.o audio.o warm.o desktop.o netcache.o
+RES  = tasx.res
 
 all: TASX.exe
 
 # Console build for debugging (stdout visible)
-TASX.exe: $(OBJS)
-	$(CXX) $(CXXFLAGS) -DTASX_CONSOLE $(OBJS) -o TASX.exe $(LDFLAGS)
+TASX.exe: $(OBJS) $(RES)
+	$(CXX) $(CXXFLAGS) -DTASX_CONSOLE $(OBJS) $(RES) -o TASX.exe $(LDFLAGS)
+
+tasx.res: tasx.rc tasx.manifest
+	windres tasx.rc -O coff -o tasx.res
 
 # Silent GUI-subsystem build shipped with ScheduledTaskInstaller.bat
-windows: $(OBJS)
-	$(CXX) $(CXXFLAGS) -DTASX_GUI -mwindows $(OBJS) -o TASX.exe $(LDFLAGS)
+windows: $(OBJS) $(RES)
+	$(CXX) $(CXXFLAGS) -DTASX_GUI -mwindows $(OBJS) $(RES) -o TASX.exe $(LDFLAGS)
 
 master.o: Infra/master.cpp $(HEADERS)
 	$(CXX) $(CXXFLAGS) -c Infra/master.cpp -o master.o
@@ -70,4 +74,4 @@ fflags.o: Infra/fflags.cc Infra/fflags.h Infra/config.h
 	$(CXX) $(CXXFLAGS) -c Infra/fflags.cc -o fflags.o
 
 clean:
-	rm -f TASX.exe *.o
+	rm -f TASX.exe *.o *.res

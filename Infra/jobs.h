@@ -2,35 +2,27 @@
 
 #include <windows.h>
 
-/* Job-per-client layer: each Roblox instance gets its own Job Object whose
-   limits (priority class + affinity + optional caps) are rewritten in place
-   on focus switches — one syscall instead of per-process/per-thread calls.
-   A shared completion port reports EXIT/NEW_PROCESS event-driven, replacing
-   exit polling and crash-handler sweeps for all job-tracked clients. */
+/* Two-job model: one focus job (no cap) and one background job (capped).
+   Each Roblox process is assigned to exactly one of them and moved on
+   focus change via AssignProcessToJobObject — one syscall instead of
+   per-thread NtSetInformationProcess. */
 
 bool JobsInit();
 void JobShutdown();
 
-/* Creates the job, applies the background profile, associates the completion
-   port and assigns the process. Returns false if assignment failed
-   (caller falls back to the per-process profile path). */
+/* Assign process to the background job (initial state). Returns false if
+   assignment failed (caller falls back to per-process profile). */
 bool JobHookProcess(DWORD pid, HANDLE hProc);
 
-/* Rewrites the job limits in place. */
+/* Move process between g_jobFocus / g_jobBackground. Returns true if the
+   process is now in the requested job (or was rewritten on assign failure). */
 bool JobApplyProfile(DWORD pid, int focused);
 
-/* Dynamic P/E-core migration, applied to every background job at once:
-   - a focused client exists -> background pinned to E-cores (game keeps
-     the P-cores);
-   - nothing focused (pure farm) -> background gets ALL cores, optionally
-     capped via JobObjectCpuRateControlInformation (config JobCpuCapPercent).
-   Idempotent: job limits are rewritten only when the policy flips. */
+/* Dynamic P/E migration: rewrites affinities of both global jobs when
+   policy flips (hybrid vs all-cores farm). Kept for master.cpp compatibility. */
 void JobsRefreshDynamic(int anyFocused);
 
-/* Drops the job bookkeeping (handle close only — clients are never killed). */
 void JobRelease(DWORD pid);
 
-/* Implemented in master.cpp:
-   kind 1 = JOB_OBJECT_MSG_EXIT_PROCESS (tracked client exited)
-   kind 2 = JOB_OBJECT_MSG_NEW_PROCESS  (child spawned inside a client job) */
+/* Implemented in master.cpp */
 void TasxNotifyJobEvent(int kind, DWORD pid);

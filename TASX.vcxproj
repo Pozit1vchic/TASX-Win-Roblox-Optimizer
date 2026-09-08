@@ -162,6 +162,12 @@
     <ClCompile Include="Infra\netcache.cc" />
   </ItemGroup>
   <ItemGroup>
+    <ResourceCompile Include="tasx.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="tasx.manifest" />
+  </ItemGroup>
+  <ItemGroup>
     <ClInclude Include="Infra\CPU.h" />
     <ClInclude Include="Infra\trimmer.h" />
     <ClInclude Include="Infra\winhook.h" />

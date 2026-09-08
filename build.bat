@@ -19,7 +19,10 @@ cd /d "%~dp0"
 set CXXFLAGS=-std=c++17 -O2 -m64 -static -Wall
 set CFLAGS=-std=c11 -O2 -m64 -Wall
 set LIBS=-lwbemuuid -lpsapi -lpowrprof -luser32 -lkernel32 -lole32 -loleaut32 -luuid -lcomctl32 -ladvapi32 -liphlpapi
-set OBJS=master.o CPU.o WMI.o trimmer.o winhook.o config.o ntsys.o tweaks.o fflags.o jobs.o stats.o audio.o warm.o desktop.o netcache.o
+set OBJS=master.o CPU.o WMI.o trimmer.o winhook.o config.o ntsys.o tweaks.o fflags.o jobs.o stats.o audio.o warm.o desktop.o netcache.o tasx.res
+
+echo [build] compiling resources...
+windres tasx.rc -O coff -o tasx.res || goto :fail
 
 echo [build] compiling C core...
 gcc %CFLAGS% -c Infra\config.c -o config.o   || goto :fail
@@ -48,7 +51,7 @@ if /i "%~1"=="silent" (
     g++ %CXXFLAGS% -DTASX_CONSOLE %OBJS% -o TASX.exe %LIBS% || goto :fail
 )
 
-del /q *.o >nul 2>&1
+del /q *.o tasx.res >nul 2>&1
 echo [build] OK: TASX.exe created
 pause
 exit /b 0

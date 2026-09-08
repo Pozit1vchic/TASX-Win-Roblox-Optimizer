@@ -9,9 +9,3 @@
    background Roblox clients; the focused client keeps its audio. */
 void AudioApplyBackgroundMute(const std::unordered_set<DWORD>& clientPids,
                               DWORD focusedPid);
-
-/* Per-PID mute helpers required by ApplyFocusIfChanged.
-   Use the same WASAPI session enumeration but target a single PID.
-   GUIDs are defined locally via DEFINE_GUID-style literals, no uuid.lib needed. */
-void AudioMuteByPid(DWORD pid);
-void AudioUnmuteByPid(DWORD pid);

@@ -7,13 +7,12 @@
 #include <optional>
 #include <unordered_map>
 #include <vector>
-#include <chrono>
 
 #include <windows.h>
 #include <psapi.h>
-#include <tlhelp32.h>
 #include <iostream>
 #include <string>
+#include <thread>
 
 #include "WMI.h"
 #include "CPU.h"
@@ -97,17 +96,13 @@ void WinHook::NotifyFocusChanged()
 namespace {
 
 std::unordered_map<DWORD, HANDLE> g_rbxHandles;
-std::unordered_map<DWORD, HANDLE> g_waitHandles; // RegisterWait handles
 DWORD g_appliedFocus = 0; /* PID currently running the focused profile */
 WinHook* g_hook = nullptr;
 HANDLE g_singleInstanceMutex = nullptr;
-bool g_wmiOk = false;
-
-ULONGLONG g_lastWsUpdateMs = 0;
-ULONGLONG g_lastCrashSweepMs = 0;
 
 bool NameContains(const std::wstring& full, const wchar_t* needle)
 {
+    /* Case-insensitive substring match on the file name part. */
     std::wstring hay = full, ndl = needle;
     for (auto& c : hay) c = (wchar_t)towlower(c);
     for (auto& c : ndl) c = (wchar_t)towlower(c);
@@ -142,56 +137,14 @@ std::wstring QueryProcessName(DWORD pid)
     return name;
 }
 
-VOID CALLBACK OnProcessExit(PVOID lpParam, BOOLEAN)
-{
-    DWORD pid = (DWORD)(ULONG_PTR)lpParam;
-    PushEvent({Ev::RobloxExited, pid});
-}
-
-void RegisterProcessWait(DWORD pid, HANDLE hProc)
-{
-    HANDLE hWait = nullptr;
-    if (!RegisterWaitForSingleObject(&hWait, hProc, OnProcessExit,
-                                     (PVOID)(ULONG_PTR)pid, INFINITE,
-                                     WT_EXECUTEONLYONCE)) {
-        return;
-    }
-    // store for UnregisterWaitEx on clean exit
-    auto it = g_waitHandles.find(pid);
-    if (it != g_waitHandles.end()) {
-        UnregisterWaitEx(it->second, nullptr);
-    }
-    g_waitHandles[pid] = hWait;
-}
-
-void UnregisterProcessWait(DWORD pid)
-{
-    auto it = g_waitHandles.find(pid);
-    if (it != g_waitHandles.end()) {
-        UnregisterWaitEx(it->second, INVALID_HANDLE_VALUE);
-        g_waitHandles.erase(it);
-    }
-}
-
 /* Event-driven hook of a single client (WMI event or sweep discovery). */
 void HookClient(DWORD pid)
 {
     if (g_rbxHandles.count(pid)) return;
 
-    // Commit charge guard: block new spawns if > threshold
-    int blockPct = config_get_int("TASX", "CommitBlockThreshold", 85);
-    if (blockPct <= 0) blockPct = 85;
-    // also support legacy CommitBlockThreshold naming? Use same.
-    int curPct = tasx_get_commit_percent();
-    if (curPct >= 0 && curPct >= blockPct) {
-        std::cout << "[TASX] Commit charge " << curPct << "%, spawn blocked (threshold "
-                  << blockPct << "%) PID " << pid << std::endl;
-        return;
-    }
-
     HANDLE hProc = OpenProcess(
         PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA |
-        PROCESS_SET_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE,
+        PROCESS_SET_INFORMATION | PROCESS_TERMINATE,
         FALSE, pid);
     if (!hProc) {
         std::cout << "[TASX] Failed to open PID " << pid << std::endl;
@@ -200,18 +153,18 @@ void HookClient(DWORD pid)
 
     g_rbxHandles[pid] = hProc;
 
-    // Register wait for exit notification (zero polling)
-    RegisterProcessWait(pid, hProc);
-
     bool inJob = JobHookProcess(pid, hProc);
     if (inJob) {
-        tasx_process_power_throttling(hProc, 1);
-        tasx_set_io_priority(hProc, 0);
-        tasx_set_memory_priority(hProc, 1);
+        /* Profile lives in the job limits; set the one-shot per-process
+           properties that jobs can't express. */
+        tasx_process_power_throttling(hProc, 1);   /* efficiency mode     */
+        tasx_set_io_priority(hProc, 0);            /* VeryLow             */
+        tasx_set_memory_priority(hProc, 1);        /* VeryLow             */
         std::cout << "[TASX] New Roblox instance PID " << pid
                   << " hooked (job-tracked)" << std::endl;
     }
     else {
+        /* Fallback: the pre-job per-process profile path. */
         CpuApplyFocusProfile(hProc, 0);
         std::cout << "[TASX] New Roblox instance PID " << pid
                   << " hooked (per-process fallback)" << std::endl;
@@ -219,6 +172,8 @@ void HookClient(DWORD pid)
 
     StartTrimmer(pid, hProc);
 
+    /* Prime the shared file-backed pages (image/dll/pak) once - every
+       instance of the same version then faults in from cache. */
     WarmClientFilesAsync(pid);
 }
 
@@ -230,9 +185,7 @@ void ReleaseClient(DWORD pid, bool logExit)
     if (logExit)
         std::cout << "[TASX] Roblox PID " << pid << " exited." << std::endl;
 
-    UnregisterProcessWait(pid);
     StopTrimmer(pid);
-    TrimmerRemoveWorkingSet(pid);
     JobRelease(pid);
     CloseHandle(it->second);
     g_rbxHandles.erase(it);
@@ -240,7 +193,6 @@ void ReleaseClient(DWORD pid, bool logExit)
     if (g_appliedFocus == pid) {
         g_appliedFocus = 0;
         TrimmerSetFocused(0);
-        AudioUnmuteByPid(pid); // ensure unmute state cleared
     }
 }
 
@@ -259,6 +211,7 @@ void KillCrashHandlerPid(DWORD pid)
 
 void SweepCrashHandlers()
 {
+    /* Single-syscall scan; also covers clients that could not be job-tracked. */
     if (!config_get_bool("TASX", "KillCrashHandler", 1)) return;
 
     std::vector<ProcStat> stats;
@@ -269,35 +222,9 @@ void SweepCrashHandlers()
             KillCrashHandlerPid(s.pid);
 }
 
-/* Fallback via Toolhelp snapshot (only if WMI down) */
-void SweepDiscoverViaSnapshot()
-{
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return;
-    PROCESSENTRY32W pe{};
-    pe.dwSize = sizeof(pe);
-    if (Process32FirstW(snap, &pe)) {
-        do {
-            std::wstring name(pe.szExeFile);
-            if (!IsRobloxName(name)) continue;
-            DWORD pid = pe.th32ProcessID;
-            if (g_rbxHandles.count(pid)) continue;
-            // commit guard inside HookClient
-            HookClient(pid);
-        } while (Process32NextW(snap, &pe));
-    }
-    CloseHandle(snap);
-}
-
-/* Discovery fallback (WMI down / missed events): one syscall, no snapshots ideally. */
+/* Discovery fallback (WMI down / missed events): one syscall, no snapshots. */
 void SweepDiscover()
 {
-    if (!g_wmiOk) {
-        // Primary fallback is snapshot per spec when WMI dead
-        SweepDiscoverViaSnapshot();
-        return;
-    }
-    // WMI healthy: use single-syscall table (lighter than snapshot)
     std::vector<ProcStat> stats;
     if (!QueryProcStats(stats)) return;
 
@@ -306,18 +233,6 @@ void SweepDiscover()
         if (g_rbxHandles.count(s.pid)) continue;
         HookClient(s.pid);
     }
-}
-
-void UpdateWorkingSetCache()
-{
-    std::vector<ProcStat> stats;
-    if (!QueryProcStats(stats)) return;
-    for (const auto& s : stats) {
-        if (g_rbxHandles.count(s.pid)) {
-            TrimmerUpdateWorkingSet(s.pid, s.workingSet);
-        }
-    }
-    g_lastWsUpdateMs = GetTickCount64();
 }
 
 void ApplyFocusIfChanged()
@@ -330,17 +245,15 @@ void ApplyFocusIfChanged()
 
     if (isRoblox && g_appliedFocus != pid)
     {
-        DWORD oldFocus = g_appliedFocus;
-        if (oldFocus) {
-            auto old = g_rbxHandles.find(oldFocus);
+        if (g_appliedFocus) {
+            auto old = g_rbxHandles.find(g_appliedFocus);
             if (old != g_rbxHandles.end()) {
-                std::cout << "[TASX] Roblox PID " << oldFocus
+                std::cout << "[TASX] Roblox PID " << g_appliedFocus
                           << " lost focus" << std::endl;
-                if (!JobApplyProfile(oldFocus, 0))
+                if (!JobApplyProfile(g_appliedFocus, 0))
                     CpuApplyFocusProfile(old->second, 0);
                 else
                     tasx_process_power_throttling(old->second, 1);
-                AudioMuteByPid(oldFocus);
             }
         }
 
@@ -352,31 +265,26 @@ void ApplyFocusIfChanged()
             else
                 tasx_process_power_throttling(cur->second, 0);
         }
-        AudioUnmuteByPid(pid);
         TrimmerSetFocused(pid);
         g_appliedFocus = pid;
-        UpdateWorkingSetCache();
     }
     else if (!isRoblox && g_appliedFocus)
     {
-        DWORD oldFocus = g_appliedFocus;
-        auto old = g_rbxHandles.find(oldFocus);
+        auto old = g_rbxHandles.find(g_appliedFocus);
         if (old != g_rbxHandles.end()) {
-            std::cout << "[TASX] Roblox PID " << oldFocus
+            std::cout << "[TASX] Roblox PID " << g_appliedFocus
                       << " lost focus (other app)" << std::endl;
-            if (!JobApplyProfile(oldFocus, 0))
+            if (!JobApplyProfile(g_appliedFocus, 0))
                 CpuApplyFocusProfile(old->second, 0);
             else
                 tasx_process_power_throttling(old->second, 1);
-            AudioMuteByPid(oldFocus);
         }
-        // Ensure focused pid itself is unmuted if it was muted before (should already)
         TrimmerSetFocused(0);
         g_appliedFocus = 0;
-        UpdateWorkingSetCache();
     }
 
-    // Non-audio policy still follows focus signal but not per tick
+    /* Audio + dynamic P/E policy follow the same focus signal. */
+    AudioApplyBackgroundMute(ClientPidSet(), g_appliedFocus);
     JobsRefreshDynamic(g_appliedFocus != 0);
 }
 
@@ -436,18 +344,16 @@ void LowMemReactorStart()
 {
     if (!config_get_bool("TASX", "LowMemReactor", 1)) return;
 
-    HANDLE hThread = CreateThread(nullptr, 0, [](LPVOID)->DWORD {
+    std::thread([] {
         HANDLE hLow = CreateMemoryResourceNotification(LowMemoryResourceNotification);
         if (!hLow) {
             std::cout << "[TASX] Low-memory notification unavailable" << std::endl;
-            return 0;
+            return;
         }
         while (WaitForSingleObject(hLow, INFINITE) == WAIT_OBJECT_0)
             PushEvent({Ev::LowMem, 0});
         CloseHandle(hLow);
-        return 0;
-    }, nullptr, 0, nullptr);
-    if (hThread) CloseHandle(hThread);
+    }).detach();
 }
 
 void HandleRobloxCreated(DWORD pid)
@@ -456,16 +362,13 @@ void HandleRobloxCreated(DWORD pid)
     HookClient(pid);
     ApplyFocusIfChanged(); /* the new instance may already be the foreground */
 
-    if (isNew && g_rbxHandles.count(pid)) {
+    if (isNew) {
         if (config_get_bool("TASX", "PurgeStandbyOnLaunch", 1)) {
             if (tasx_purge_standby_list())
                 std::cout << "[TASX] Standby list purged (RAM reclaimed for the game)"
                           << std::endl;
         }
-        // Kill crash handlers only on RBX_ON (per spec) not periodically
-        SweepCrashHandlers();
-        FFlagsApply();
-        UpdateWorkingSetCache();
+        FFlagsApply(); /* a Roblox launch may coincide with a fresh version dir */
     }
 
     TweaksPowerEnter();
@@ -475,7 +378,6 @@ void HandleRobloxCreated(DWORD pid)
 void HandleRobloxExited(DWORD pid)
 {
     ReleaseClient(pid, true);
-    // commit block auto-unblocks on next RBX_ON due to fresh check
 
     if (g_rbxHandles.empty()) {
         TimerOff();
@@ -491,6 +393,9 @@ int RunTasx()
     std::cout << "[TASX] Config: " << iniPath
               << (config_loaded() ? " (loaded)" : " (defaults)") << std::endl;
 
+    /* One TASX at a time — the installer's scheduled task plus a manual
+       launch would fight over the same processes. Make the reason visible
+       instead of exiting silently (that reads as "the app won't start"). */
     g_singleInstanceMutex = CreateMutexW(nullptr, TRUE, L"Local\\TASX_Optimizer_Mutex");
     if (g_singleInstanceMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
 #ifdef TASX_CONSOLE
@@ -515,15 +420,13 @@ int RunTasx()
         CpuSetBoostMode(0);
     TweaksApplyOneShot();
     FFlagsApply();
-    NetCacheApply();
-    SystemCleanPass(true);
+    NetCacheApply();       /* junction-shared client caches (config-gated) */
+    SystemCleanPass(true); /* fresh Windows state right from the start */
 
     bool jobsOk = JobsInit();
-    (void)jobsOk;
 
-    g_wmiOk = _wmimon();
-    if (!g_wmiOk)
-        std::cout << "[TASX] WMI unavailable -> snapshot discovery active"
+    if (!_wmimon())
+        std::cout << "[TASX] WMI unavailable -> stats-table discovery sweep active"
                   << std::endl;
 
     g_hook = new WinHook();
@@ -531,14 +434,15 @@ int RunTasx()
 
     LowMemReactorStart();
 
-    SweepDiscover();
+    SweepDiscover();   /* catch anything already running */
     ApplyFocusIfChanged();
-    UpdateWorkingSetCache();
-    g_lastCrashSweepMs = GetTickCount64();
     if (!g_rbxHandles.empty()) { TweaksPowerEnter(); TimerOn(); }
 
     std::cout << "[TASX] Launched" << std::endl;
 
+    /* The loop is now event-driven; the 250 ms wait is only the focus
+       safety net cadence. Sweeps use ONE syscall each, not snapshots. */
+    int tick = 0;
     while (true)
     {
         auto ev = PopEvent(250);
@@ -552,44 +456,37 @@ int RunTasx()
             case Ev::LowMem:
                 std::cout << "[TASX] Low memory event -> reactive clean" << std::endl;
                 SystemCleanPass(true);
-                // Aggressive trim + standby purge if commit >90
-                {
-                    int pct = tasx_get_commit_percent();
-                    if (pct >= 90) {
-                        std::cout << "[TASX] Commit " << pct << "% -> hard trim + purge" << std::endl;
-                        tasx_purge_standby_list();
-                        TrimmerTrimAllAggressive();
-                    } else {
-                        TrimmerTrimAll();
-                    }
-                }
+                TrimmerTrimAll();
                 break;
             }
         }
 
-        // Focus safety net (hook may miss exotic switches): PopEvent timeout 250ms already does cadence via loop
-        // But also ensure ApplyFocus on each iteration (lightweight, does GetForegroundWindow)
-        ApplyFocusIfChanged();
+        ++tick;
 
-        ULONGLONG now = GetTickCount64();
+        ApplyFocusIfChanged(); /* hook may miss exotic focus switches */
 
-        // Periodic WS cache refresh ~10s, plus GDI guard, audio refresh, dynamic jobs
-        if (now - g_lastWsUpdateMs >= 10000) {
-            // discovery only if WMI unhealthy; otherwise WS cache update suffices
-            if (!g_wmiOk) SweepDiscover();
-            UpdateWorkingSetCache();
+        if (tick % 8 == 0) {             /* ~2 s: discovery + stale exits */
+            SweepDiscover();
+            std::vector<DWORD> exited;
+            for (auto& kv : g_rbxHandles) {
+                DWORD code = 0;
+                if (GetExitCodeProcess(kv.second, &code) && code != STILL_ACTIVE)
+                    exited.push_back(kv.first);
+            }
+            for (DWORD pid : exited) ReleaseClient(pid, true);
+            if (g_rbxHandles.empty()) { TimerOff(); TweaksPowerExit(); }
+
+            /* Per-client GDI/USER guard + audio session refresh (sessions
+               appear/disappear client-side without our knowledge). */
             for (auto& kv : g_rbxHandles)
                 DesktopCheckClient(kv.first, kv.second);
-            // audio sessions appear/disappear without our knowledge -> periodic bulk sync
             AudioApplyBackgroundMute(ClientPidSet(), g_appliedFocus);
             JobsRefreshDynamic(g_appliedFocus != 0);
         }
 
-        // Crash handlers: only every 60s plus on RBX_ON/ChildSpawn
-        if (now - g_lastCrashSweepMs >= 60000) {
+        if (tick % 40 == 0) {            /* ~10 s: crash handlers + net */
             SweepCrashHandlers();
             NetCacheLogConnections(ClientPidSet());
-            g_lastCrashSweepMs = now;
         }
     }
 

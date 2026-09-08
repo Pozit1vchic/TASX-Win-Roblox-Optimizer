@@ -1,7 +1,6 @@
 #pragma once
 
 #include <windows.h>
-#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -11,9 +10,7 @@ extern "C" {
 
 /* Request/release a finer system clock. unitsOf100ns = 5000 requests the
    0.5 ms tick used for smooth high-FPS frame pacing. Returns 1 on success
-   and stores the granted resolution in *actualOut (may be coarser). If
-   NtSetTimerResolution returns STATUS_PRIVILEGE_NOT_HELD the call logs
-   and returns 0 without crashing. */
+   and stores the granted resolution in *actualOut (may be coarser). */
 int tasx_set_timer_resolution(unsigned long unitsOf100ns, int enable,
                               unsigned long* actualOut);
 
@@ -33,59 +30,17 @@ int tasx_process_power_throttling(HANDLE hProcess, int enable);
 /* Per-thread power throttling, same semantics as above. */
 int tasx_thread_power_throttling(HANDLE hThread, int enable);
 
+/* Applies per-thread throttling to every thread of the process. */
+int tasx_process_threads_power_throttling(HANDLE hProcess, int enable);
+
 /* --- Kernel memory lists (require elevation) --------------------------- */
 
 /* Purge the standby list ("RAM cleaner" page cache) — frees cached pages
-   system-wide. Requires SeProfileSingleProcessPrivilege (admin).
-   Returns 0 if no admin — caller should continue without it. */
+   system-wide. Requires SeProfileSingleProcessPrivilege (admin). */
 int tasx_purge_standby_list(void);
 
 /* Empty all process working sets system-wide. Also privileged. */
 int tasx_empty_working_sets_system(void);
-
-/* --- Job Objects (2-job model: focus / background) -------------------- */
-
-/* Create a Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
-   Returns NULL on failure. */
-HANDLE tasx_job_create(void);
-
-/* Assign process to job. Returns 1 on success. */
-int tasx_job_assign(HANDLE hJob, HANDLE hProcess);
-
-/* Cap CPU rate for the whole job: percent 1..100 (e.g. 20 = 20%).
-   Uses JobObjectCpuRateControlInformation + HARD_CAP. */
-int tasx_job_set_cpu_rate(HANDLE hJob, unsigned long percent);
-
-/* Group I/O priority for the job: level 0=VeryLow .. 3=High.
-   Falls back to per-process tasx_set_io_priority if job IoRate not supported. */
-int tasx_job_set_io_priority(HANDLE hJob, unsigned long level);
-
-/* --- P/E core topology ------------------------------------------------ */
-
-/* Returns affinity masks for P-cores and E-cores via
-   GetLogicalProcessorInformationEx(RelationProcessorCore). 0 if unavailable.
-   Group 0 only (sufficient for client scheduling). */
-unsigned long long tasx_get_pcore_mask(void);
-unsigned long long tasx_get_ecore_mask(void);
-unsigned long long tasx_get_all_mask(void);
-
-/* --- Commit charge / OOM guard --------------------------------------- */
-
-/* Query system commit charge via NtQuerySystemInformation(SystemPerformanceInformation).
-   On success stores *committed and *limit in pages (caller converts via page size if needed)
-   actually in bytes: committed*pageSize vs limit*pageSize gives bytes.
-   Returns 1 on success. Also works via GlobalMemoryStatusEx fallback. */
-int tasx_get_commit_info(uint64_t* committed, uint64_t* limit);
-int tasx_get_commit_percent(void); /* 0..100, -1 on failure */
-
-/* --- ETW suppression -------------------------------------------------- */
-
-/* Disable an ETW provider by name for background jobs.
-   Provider names: L"Microsoft-Windows-Diagnostics-Performance",
-                   L"Microsoft-Windows-Kernel-Processor-Power"  etc.
-   Uses ControlTraceW + EnableTraceEx2 with EVENT_CONTROL_CODE_DISABLE_PROVIDER.
-   Requires admin; returns 0 silently if not elevated. */
-int tasx_etw_disable_provider(const wchar_t* providerName);
 
 /* --- Single-syscall process table ------------------------------------- */
 

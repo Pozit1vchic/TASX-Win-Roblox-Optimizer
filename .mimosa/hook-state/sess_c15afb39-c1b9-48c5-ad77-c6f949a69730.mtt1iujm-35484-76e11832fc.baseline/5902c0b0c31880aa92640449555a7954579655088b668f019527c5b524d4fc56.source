@@ -1,0 +1,12 @@
+#pragma once
+
+/* Starts the async WMI process watcher (RobloxPlayerBeta.exe + Roblox.exe).
+   On every instance-creation / -deletion event the PID is extracted directly
+   from TargetInstance.Handle (no process-table rescans) and reported through
+   TasxNotifyProcess() (implemented in master.cpp). */
+bool _wmimon();
+
+void _wmishutdown();
+
+/* Implemented in master.cpp. */
+void TasxNotifyProcess(unsigned long pid, int created);
