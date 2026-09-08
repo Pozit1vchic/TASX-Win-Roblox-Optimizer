@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "ntsys.h"
+#include "lograte.h"
 
 #include <iostream>
 #include <mutex>
@@ -106,8 +107,17 @@ bool ApplyLimitsToJob(HANDLE job, bool focused, DWORD_PTR bgMaskForBg)
                                         &crc, sizeof(crc));
             }
         }
-        // IO priority group
-        tasx_job_set_io_priority(job, 0); // VeryLow for background
+        // IO priority group. BUG 10: tasx_job_set_io_priority returns 0
+        // ("not applied, use per-process"), so enforce VeryLow on every
+        // assigned process ourselves.
+        if (tasx_job_set_io_priority(job, 0) == 0) {
+            for (const auto& kv : g_pidJob) {
+                HANDLE hp = OpenProcess(PROCESS_SET_INFORMATION, FALSE, kv.first);
+                if (!hp) continue;
+                tasx_set_io_priority(hp, 0); /* VeryLow for background */
+                CloseHandle(hp);
+            }
+        }
 
         // ETW suppression for background
         if (config_get_bool("ETW", "DisableTelemetry", 1) ||
@@ -185,7 +195,9 @@ bool CreateGlobalJobs()
                   config_get_int("TASX", "BackgroundCpuCapPercent", 0) > 0 :
                   config_get_int("TASX", "JobCpuCapPercent", 0) > 0;
     if (!ok1 || !ok2) {
-        std::cout << "[Jobs] Warning: ApplyLimits failed focus=" << ok1 << " bg=" << ok2 << std::endl;
+        if (LogRateLimit("jobs-applylimits", 10))
+            std::cout << "[Jobs] Warning: ApplyLimits failed focus=" << ok1
+                      << " bg=" << ok2 << std::endl;
     }
     return true;
 }
@@ -233,7 +245,13 @@ bool JobHookProcess(DWORD pid, HANDLE hProc)
         DWORD err = GetLastError();
         if (err == ERROR_ALREADY_ASSIGNED || err == ERROR_ACCESS_DENIED) {
             // Process already in a job (maybe from previous TASX run or parent) - try to update limits instead
-            std::cout << "[Jobs] PID " << pid << " already in job (err " << err << ") -> fallback to limit rewrite" << std::endl;
+            // BUG 4: per-PID rate limit - a stuck PID would otherwise spam
+            // this line on every discovery/refresh pass.
+            static std::unordered_set<DWORD> warnedErr5;
+            if (warnedErr5.find(pid) == warnedErr5.end()) {
+                warnedErr5.insert(pid);
+                std::cout << "[Jobs] PID " << pid << " already in job (err " << err << ") -> fallback to limit rewrite" << std::endl;
+            }
             // Still track as background logically
             g_pidJob[pid] = 0;
             g_knownPids.insert(pid);
@@ -292,7 +310,13 @@ bool JobApplyProfile(DWORD pid, int focused)
         // Fallback is to rewrite the global job limits? But that would affect all.
         // Instead fallback to per-process CpuApply via return false so master does CpuApplyFocusProfile.
         // Log and keep logical state flipped so next call doesn't retry assign storm.
-        std::cout << "[Jobs] PID " << pid << " move to " << (focused?"focus":"bg") << " failed (err " << err << ") -> per-process fallback" << std::endl;
+        // BUG 4: same per-PID rate limit as JobHookProcess.
+        static std::unordered_set<DWORD> warnedMoveErr5;
+        if (warnedMoveErr5.find(pid) == warnedMoveErr5.end()) {
+            warnedMoveErr5.insert(pid);
+            std::cout << "[Jobs] PID " << pid << " move to " << (focused?"focus":"bg")
+                      << " failed (err " << err << ") -> per-process fallback" << std::endl;
+        }
         // Do not update it->second, keep as is, caller will handle via Cpu path
         return false;
     }

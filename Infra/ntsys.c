@@ -357,46 +357,12 @@ int tasx_job_set_cpu_rate(HANDLE hJob, unsigned long percent)
 
 int tasx_job_set_io_priority(HANDLE hJob, unsigned long level)
 {
-    if (!hJob || hJob == INVALID_HANDLE_VALUE) return 0;
-    /* JOBOBJECT_JOBSET_INFORMATION or JobObjectIoRateControl not universally
-       available; attempt IoRateControlInformation first, fallback to
-       per-process style via JobObject limit. Use 0=VeryLow..3=High mapping. */
-    JOBOBJECT_ASSOCIATE_COMPLETION_PORT dummy;
-    (void)dummy;
-    /* Try JOB_OBJECT_LIMIT_IO_RATE if SDK exposes; otherwise use extended limits.
-       For portability, we store I/O priority via NtSetInformationJobObject
-       with JobObjectIoRateControlInformation (value 30 on newer SDK).
-       If unsupported, return 0 and caller falls back to per-process. */
-#ifndef JobObjectIoRateControlInformation
-#define JobObjectIoRateControlInformation 30
-#endif
-    /* Minimal IoRate structure - only priority matters for background VeryLow */
-    struct {
-        LONG MaxIops;
-        LONG MaxBandwidth;
-        LONG ReservationIops;
-        PWSTR VolumeName;
-        ULONG BaseIoSize;
-        ULONG ControlFlags;
-        USHORT VolumeNameLength;
-        ULONG CriticalReservationIops;
-        ULONG ReservationBandwidth;
-        ULONG CriticalReservationBandwidth;
-        ULONG MaxTimePercent;
-        ULONG ReservationTimePercent;
-        ULONG CriticalReservationTimePercent;
-    } ioRate;
-    ZeroMemory(&ioRate, sizeof(ioRate));
-    /* Map level 0..3 to MaxIops hint; but real I/O priority is separate.
-       For now, set a conservative cap for VeryLow: limit IOPS to low. */
-    if (level > 3) level = 0;
-    /* No direct IO priority per job via public API older than Win8;
-       use JobObjectLimitViolationInformation fallback - just return 0 to indicate
-       caller should use per-process tasx_set_io_priority instead. */
-    (void)ioRate;
-    /* Attempt generic: if system supports JobObjectIoRateControl, VeryLow -> cap */
-    /* For now: report success without action if level==0, caller will still set per-process */
-    return 1;
+    /* BUG 10: Job-level IO priority is not portable - the real Job IoRate
+       API requires Win8+ and JOBOBJECT_IO_RATE_CONTROL_INFORMATION, which is
+       not exposed in public headers. Caller MUST also call per-process
+       tasx_set_io_priority on each assigned process. */
+    (void)hJob; (void)level;
+    return 0;  /* return 0 to signal "not applied, use per-process" */
 }
 
 /* --- P/E topology ---------------------------------------------------- */

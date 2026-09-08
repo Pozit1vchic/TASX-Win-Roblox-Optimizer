@@ -36,7 +36,6 @@ HANDLE g_hThread = nullptr;
 HANDLE g_hStop = nullptr;
 HANDLE g_hWake = nullptr;
 HANDLE g_hLowMem = nullptr;
-std::int64_t g_lowMemCooldownMs = 30000;
 
 std::int64_t NowMs()
 {
@@ -149,19 +148,21 @@ DWORD WINAPI SchedulerThread(LPVOID)
             break;
         }
         if (waitResult == WAIT_OBJECT_0 + 1 && g_hLowMem) {
-            // LowMemoryResourceNotification fired; handle only once per cooldown
+            // BUG 1 fix: the notification is manual-reset and stays signaled
+            // while memory is low; without a cooldown this branch spins
+            // (log + trim storm). Config-gated cooldown (LowMemCooldownSec).
             std::int64_t nowMs = NowMs();
             static std::int64_t lastLowMemMs = 0;
-            if (nowMs - lastLowMemMs < g_lowMemCooldownMs) {
-                // Cooldown active: skip handling, reset wait to regular timeout
-                if (g_hLowMem) {
-                    BOOL clear = QueryMemoryResourceNotification(g_hLowMem, NULL);
-                    (void)clear;
-                }
+            int cooldownSec = config_get_int("TASX", "LowMemCooldownSec", 30);
+            if (nowMs - lastLowMemMs < (std::int64_t)cooldownSec * 1000) {
+                BOOL dummy = FALSE;
+                QueryMemoryResourceNotification(g_hLowMem, &dummy);
+                Sleep(1000);
                 continue;
             }
             lastLowMemMs = nowMs;
-            // Check commit >90 and purge as well
+            std::cout << "[Trimmer] LowMem signal -> aggressive trim (cooldown "
+                      << cooldownSec << "s)" << std::endl;
             int pct = tasx_get_commit_percent();
             if (pct >= 90) {
                 std::cout << "[Trimmer] Commit " << pct << "% >90% -> hard trim + standby purge" << std::endl;
@@ -170,8 +171,7 @@ DWORD WINAPI SchedulerThread(LPVOID)
             } else {
                 TrimmerTrimAllAggressive();
             }
-            // Reset lowmem signal? CreateMemoryResourceNotification is manual-reset; stays signaled until memory low condition clears.
-            // We continue loop, will wait again.
+            Sleep(cooldownSec * 1000);   // enforce cooldown
             continue;
         }
         if (waitResult == WAIT_OBJECT_0 + 2) {

@@ -1,32 +1,10 @@
 #include "fflags.h"
 #include "config.h"
+#include "lograte.h"
 #include <windows.h>
 #include <string>
 #include <wchar.h>
 #include <iostream>
-
-/* Atomic write helper: writes to temp file, then MoveFileEx(REPLACE_EXISTING)
-   to target; preserves all unknown JSON keys (file shared with injector). */
-static bool AtomicWriteFFlags(const wchar_t* path, const std::wstring& content)
-{
-    wchar_t tempPath[MAX_PATH];
-    wcscpy_s(tempPath, MAX_PATH, path);
-    wcscat_s(tempPath, MAX_PATH, L".tmp");
-    HANDLE h = CreateFileW(tempPath, GENERIC_WRITE, 0, nullptr,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    DWORD written = 0;
-    WriteFile(h, content.c_str(), (DWORD)(content.size() * sizeof(wchar_t)), &written, nullptr);
-    CloseHandle(h);
-    return MoveFileExW(tempPath, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? true : false;
-}
-
-void FFlagsWriteTelemetryOnly()
-{
-    // Only writes telemetry disable keys; all other flags left untouched
-    // Preserves unknown JSON keys via read-modify-write on the file
-    std::cout << "[FFlags] Telemetry-only write (atomic temp + replace)" << std::endl;
-}
 
 #include <windows.h>
 
@@ -106,6 +84,13 @@ void BuildFlagPlan(FlagPlan& plan)
         for (const char* k : keys) plan.remove.push_back(k);
     };
 
+    // BUG 7: graphics blocks (FPS unlock / Renderer / Lighting /
+    // TextureQuality) belong to the external injector when
+    // InjectorOwnsGraphics=1. The telemetry block below stays OUTSIDE and
+    // ALWAYS applies (both owners disable telemetry: FFlags + ETW).
+    bool injectorOwnsGraphics = config_get_bool("TASX", "InjectorOwnsGraphics", 1);
+    if (!injectorOwnsGraphics) {
+
     /* FPS unlock — the headline lever. */
     if (config_get_bool("Roblox", "UncapFps", 1)) {
         int fps = config_get_int("Roblox", "TargetFps", 999);
@@ -160,6 +145,8 @@ void BuildFlagPlan(FlagPlan& plan)
         set("DFIntTextureQualityOverride", std::to_string(texLvl));
     }
 
+    } /* end !injectorOwnsGraphics */
+
     /* Cut the client's telemetry chatter. */
     if (config_get_bool("Roblox", "DisableTelemetry", 1)) {
         set("DFFlagDebugDisableTelemetryEphemeralCounter", "True");
@@ -205,8 +192,9 @@ bool ApplyToVersion(const std::wstring& versionDir, const FlagPlan& plan)
         return false;
     }
 
-    std::cout << "[FFlags] Applied " << plan.set.size()
-              << " flags -> " << WideToUtf8(jsonPath) << std::endl;
+    if (LogRateLimit("fflags-applied", 10))
+        std::cout << "[FFlags] Applied " << plan.set.size()
+                  << " flags -> " << WideToUtf8(jsonPath) << std::endl;
     return true;
 }
 
@@ -250,17 +238,12 @@ void ScanVersionsRoot(const std::wstring& root, const FlagPlan& plan,
 void FFlagsApply()
 {
     if (config_get_bool("TASX", "InjectorOwnsGraphics", 1)) {
-        // Contract: injector owns FPS/render/texture; TASX writes only telemetry + cache
-        // Skip UncapFps / TargetFps / Renderer / Lighting / TextureQuality
-        // Preserve all unknown JSON keys via atomic temp-file + MoveFileEx
-        std::cout << "[FFlags] InjectorOwnsGraphics=1 — writing telemetry+cache only" << std::endl;
-        // Atomic write to ClientAppSettings.json (preserve unknown keys)
-        // Implementation kept minimal: only disable telemetry and preserve existing flags
-        FFlagsWriteTelemetryOnly();
-        return;
+        // BUG 7: the contract is handled inside BuildFlagPlan - the plan now
+        // contains only telemetry keys, and ApplyToVersion still performs the
+        // atomic read-modify-write preserving all injector-owned flags.
+        std::cout << "[FFlags] InjectorOwnsGraphics=1 — writing telemetry only"
+                  << std::endl;
     }
-    // Original full FFlags path (preserved for InjectorOwnsGraphics=0)
-    // ... existing code ...
     FlagPlan plan;
     BuildFlagPlan(plan);
     int processed = 0;

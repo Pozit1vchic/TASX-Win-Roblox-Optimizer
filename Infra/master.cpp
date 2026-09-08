@@ -30,6 +30,8 @@
 #include "desktop.h"
 #include "netcache.h"
 
+#include "lograte.h"
+
 #include <unordered_set>
 
 /* ------------------------------------------------------------------ */
@@ -50,22 +52,6 @@ struct Event {
 std::mutex g_queueMutex;
 std::condition_variable g_queueCv;
 std::deque<Event> g_queue;
-
-std::int64_t NowMs()
-{
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-
-void LogRateLimit(const char* tag, int minIntervalSec)
-{
-    static std::unordered_map<std::string, std::int64_t> lastCall;
-    std::int64_t now = NowMs();
-    std::string k(tag);
-    if (lastCall.count(k) && (now - lastCall[k]) < (std::int64_t)minIntervalSec * 1000)
-        return; // rate-limited
-    lastCall[k] = now;
-}
 
 void PushEvent(Event ev)
 {
@@ -256,7 +242,8 @@ void ReleaseClient(DWORD pid, bool logExit)
     if (g_appliedFocus == pid) {
         g_appliedFocus = 0;
         TrimmerSetFocused(0);
-        AudioUnmuteByPid(pid); // ensure unmute state cleared
+        // BUG 14: the PID is dead - its WASAPI sessions are already gone.
+        // No audio API call; just drop our focus/mute bookkeeping (above).
     }
 }
 
@@ -343,10 +330,16 @@ void ApplyFocusIfChanged()
     if (hwnd) GetWindowThreadProcessId(hwnd, &pid);
 
     bool isRoblox = pid != 0 && g_rbxHandles.count(pid) != 0;
-    static std::int64_t lastFocusMs = 0;
-    std::int64_t nowMs = NowMs();
-    if (isRoblox && (nowMs - lastFocusMs) < 500) return; // hysteresis coalesce
-    lastFocusMs = nowMs;
+    // BUG 5/13: configurable hysteresis, bypassed so the FIRST focus
+    // detection after startup (or when nothing was focused yet) is instant.
+    static ULONGLONG lastFocusCheckMs = 0;
+    ULONGLONG now = GetTickCount64();
+    int hysteresisMs = config_get_int("TASX", "FocusHysteresisMs", 500);
+    bool bypassHysteresis = (g_appliedFocus == 0 && isRoblox);
+    if (!bypassHysteresis && (now - lastFocusCheckMs) < (ULONGLONG)hysteresisMs) {
+        return;
+    }
+    lastFocusCheckMs = now;
 
     if (isRoblox && g_appliedFocus != pid)
     {
@@ -396,8 +389,14 @@ void ApplyFocusIfChanged()
         UpdateWorkingSetCache();
     }
 
-    // Non-audio policy still follows focus signal but not per tick
-    JobsRefreshDynamic(g_appliedFocus != 0);
+    // BUG 5: rewrite the dynamic job profile only when the focus STATE
+    // (focused / not focused) actually changed, not on every 250 ms tick.
+    static int lastAppliedFocusState = -1;
+    int currentState = (g_appliedFocus != 0) ? 1 : 0;
+    if (currentState != lastAppliedFocusState) {
+        JobsRefreshDynamic(currentState);
+        lastAppliedFocusState = currentState;
+    }
 }
 
 /* Timer resolution: 0.5 ms tick while Roblox is running -> smoother frame
@@ -462,8 +461,13 @@ void LowMemReactorStart()
             std::cout << "[TASX] Low-memory notification unavailable" << std::endl;
             return 0;
         }
-        while (WaitForSingleObject(hLow, INFINITE) == WAIT_OBJECT_0)
+        // BUG 3: the notification is manual-reset and stays signaled while
+        // memory is low - without a debounce this floods the event queue.
+        while (true) {
+            if (WaitForSingleObject(hLow, INFINITE) != WAIT_OBJECT_0) break;
             PushEvent({Ev::LowMem, 0});
+            Sleep(30000);  // debounce: after signaling, sleep 30s before next push
+        }
         CloseHandle(hLow);
         return 0;
     }, nullptr, 0, nullptr);
@@ -575,21 +579,26 @@ int RunTasx()
             case Ev::RobloxExited:  HandleRobloxExited(ev->pid);  break;
             case Ev::ChildSpawn:    KillCrashHandlerPid(ev->pid); break;
             case Ev::Focus:         ApplyFocusIfChanged();        break;
-            case Ev::LowMem:
+            case Ev::LowMem: {
+                static ULONGLONG lastLowMemCleanMs = 0;
+                ULONGLONG now = GetTickCount64();
+                int minIntervalSec = config_get_int("TASX", "SystemCleanMinIntervalSec", 60);
+                if (now - lastLowMemCleanMs < (ULONGLONG)minIntervalSec * 1000) {
+                    break;  // rate-limited
+                }
+                lastLowMemCleanMs = now;
                 std::cout << "[TASX] Low memory event -> reactive clean" << std::endl;
-                SystemCleanPass(true);
-                // Aggressive trim + standby purge if commit >90
-                {
-                    int pct = tasx_get_commit_percent();
-                    if (pct >= 90) {
-                        std::cout << "[TASX] Commit " << pct << "% -> hard trim + purge" << std::endl;
-                        tasx_purge_standby_list();
-                        TrimmerTrimAllAggressive();
-                    } else {
-                        TrimmerTrimAll();
-                    }
+                tasx_purge_standby_list();
+                TrimmerTrimAllAggressive();
+                // NEVER call SystemCleanPass (global WS empty) if focused client exists
+                if (g_appliedFocus == 0) {
+                    SystemCleanPass(true);
+                } else {
+                    std::cout << "[TASX] Skipped system clean (focused PID "
+                              << g_appliedFocus << " active)" << std::endl;
                 }
                 break;
+            }
             }
         }
 
@@ -616,6 +625,38 @@ int RunTasx()
             SweepCrashHandlers();
             NetCacheLogConnections(ClientPidSet());
             g_lastCrashSweepMs = now;
+
+            // BUG 12: periodic pagefile free-space check (was only in
+            // HandleRobloxCreated) + self CPU watchdog.
+            ULARGE_INTEGER freeBytes = {0};
+            if (GetDiskFreeSpaceExW(NULL, &freeBytes, NULL, NULL)) {
+                if (freeBytes.QuadPart < (8ULL << 30)) {
+                    if (LogRateLimit("pagefile-low", 300))
+                        std::cout << "[TASX] WARNING: Pagefile volume < 8 GB free" << std::endl;
+                }
+            }
+            {
+                static ULONGLONG lastCpuCheckMs = 0;
+                static ULONGLONG lastSelfCpuMs = 0;
+                FILETIME ftime, fexit, fkernel, fuser;
+                if (GetProcessTimes(GetCurrentProcess(), &ftime, &fexit, &fkernel, &fuser)) {
+                    ULONGLONG ku =
+                        (((ULONGLONG)fkernel.dwHighDateTime << 32) | fkernel.dwLowDateTime) +
+                        (((ULONGLONG)fuser.dwHighDateTime << 32) | fuser.dwLowDateTime);
+                    if (lastCpuCheckMs && now > lastCpuCheckMs && ku >= lastSelfCpuMs) {
+                        int cpuPct = (int)((ku - lastSelfCpuMs) /
+                                           ((now - lastCpuCheckMs) * 10000));
+                        int threshold = config_get_int("TASX", "SelfCpuWatchdogPercent", 5);
+                        if (cpuPct > threshold && LogRateLimit("self-cpu", 300)) {
+                            std::cout << "[TASX] WARNING: Self CPU " << cpuPct
+                                      << "% exceeds watchdog threshold " << threshold
+                                      << "%" << std::endl;
+                        }
+                    }
+                    lastSelfCpuMs = ku;
+                    lastCpuCheckMs = now;
+                }
+            }
         }
     }
 

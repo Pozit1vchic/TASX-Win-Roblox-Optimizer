@@ -56,8 +56,9 @@ int tasx_job_assign(HANDLE hJob, HANDLE hProcess);
    Uses JobObjectCpuRateControlInformation + HARD_CAP. */
 int tasx_job_set_cpu_rate(HANDLE hJob, unsigned long percent);
 
-/* Group I/O priority for the job: level 0=VeryLow .. 3=High.
-   Falls back to per-process tasx_set_io_priority if job IoRate not supported. */
+/* Group I/O priority for the job: NOT portable, always returns 0
+   ("not applied, use per-process"). Caller MUST call per-process
+   tasx_set_io_priority on each assigned process instead. */
 int tasx_job_set_io_priority(HANDLE hJob, unsigned long level);
 
 /* --- P/E core topology ------------------------------------------------ */

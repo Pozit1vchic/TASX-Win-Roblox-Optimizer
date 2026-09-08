@@ -34,12 +34,14 @@ All of the above is configurable — see `TASX.ini` (documented, optional; sane 
 
 TASX and the external FFlags/Injector launcher are designed to share the same clients without conflict.
 
-| Component | Owns | Never touches |
-|---|---|---|
-| TASX (this .exe) | Priority, affinity, EcoQoS, I/O + mem priority, Job limits, trim, audio mute, ETW | Graphics settings (FPS, renderer, lighting, texture) |
-| Injector (external) | FPS cap (`UncapFps`/`TargetFps`), render mode (`Renderer`), lighting (`Lighting`), texture (`TextureQuality`), volume | Job limits, affinity, trim |
+| Concern | Owner |
+|---------|-------|
+| FPS cap, render quality, per-client RAM cap | External injector |
+| CPU priority, affinity, EcoQoS, I/O+mem priority, job limits | TASX |
+| Audio mute | TASX (WASAPI) |
+| Telemetry disable | Both (FFlags + ETW) |
 
-When `InjectorOwnsGraphics=1` (default), `FFlagsApply` skips graphics keys and writes only telemetry-disable + cache settings, preserving unknown JSON keys via atomic temp-file + `MoveFileEx`.
+When `InjectorOwnsGraphics=1` (default), `BuildFlagPlan` omits the graphics keys (FPS unlock, Renderer, Lighting, TextureQuality) and TASX writes only the telemetry-disable flags; `ApplyToVersion` still performs the atomic read-modify-write (temp-file + `MoveFileEx`), preserving every injector-owned and user JSON key.
 
 ## What do I need to know?
 

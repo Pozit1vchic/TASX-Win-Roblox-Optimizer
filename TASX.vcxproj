@@ -182,6 +182,7 @@
     <ClInclude Include="Infra\warm.h" />
     <ClInclude Include="Infra\desktop.h" />
     <ClInclude Include="Infra\netcache.h" />
+    <ClInclude Include="Infra\lograte.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

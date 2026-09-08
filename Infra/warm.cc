@@ -1,6 +1,7 @@
 #include "warm.h"
 
 #include "config.h"
+#include "lograte.h"
 
 #include <algorithm>
 #include <iostream>
@@ -104,13 +105,12 @@ void WarmClientFilesAsync(DWORD pid)
     // Cache primed paths globally — only prime once per version directory
     std::thread([pid]() {
         HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-        HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-        if (!hProc) return;
+        if (!h) return;
 
         wchar_t path[MAX_PATH] = {};
         DWORD size = MAX_PATH;
-        BOOL ok = QueryFullProcessImageNameW(hProc, 0, path, &size);
-        CloseHandle(hProc);
+        BOOL ok = QueryFullProcessImageNameW(h, 0, path, &size);
+        CloseHandle(h);
         if (!ok) return;
 
         std::wstring dir(path);
@@ -118,12 +118,18 @@ void WarmClientFilesAsync(DWORD pid)
         if (slash == std::wstring::npos) return;
         dir.resize(slash);
 
-    std::lock_guard<std::mutex> lock(g_primedPathsMtx); // protect cache set
-    if (g_primedPaths.count(dir)) {
-            std::cout << "[Warm] Version dir already primed: " << std::string(dir.begin(), dir.end()) << std::endl;
-            return; // no-op for same version
+        // BUG 6: version-dir cache - reserve the dir BEFORE the warm pass so
+        // concurrent clients of the same version don't repeat it. (This also
+        // fixes the old self-deadlock: a scope-wide lock_guard was taken here
+        // and again after priming on the same non-recursive mutex.) Scoped
+        // block: the lock is released immediately after the check/insert.
+        {
+            std::lock_guard<std::mutex> lock(g_primedPathsMtx);
+            if (g_primedPaths.count(dir)) {
+                return;  // already primed this version
+            }
+            g_primedPaths.insert(dir);
         }
-        dir.resize(slash);
 
         ULONGLONG budget =
             (ULONGLONG)std::max(0, config_get_int("TASX", "WarmMaxMB", 256)) << 20;
@@ -157,11 +163,17 @@ void WarmClientFilesAsync(DWORD pid)
         }
 
         if (warmed) {
+            if (LogRateLimit("warm-primed", 10)) {
+                std::cout << "[Warm] Shared pages primed (once): " << (warmed >> 20)
+                          << " MB from " << std::string(dir.begin(), dir.end())
+                          << std::endl;
+            }
+        }
+        else {
+            // Warm pass failed (e.g. budget): release the reservation so a
+            // later client of the same version can retry.
             std::lock_guard<std::mutex> lock(g_primedPathsMtx);
-            g_primedPaths.insert(dir);
-            std::cout << "[Warm] Shared pages primed (once): " << (warmed >> 20)
-                      << " MB from " << std::string(dir.begin(), dir.end())
-                      << std::endl;
+            g_primedPaths.erase(dir);
         }
     }).detach();
 }
