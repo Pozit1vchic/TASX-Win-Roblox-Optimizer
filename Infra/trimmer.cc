@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "ntsys.h"
+#include "lograte.h"
 
 #include <psapi.h>
 
@@ -167,7 +168,7 @@ DWORD WINAPI SchedulerThread(LPVOID)
             if (pct >= 90) {
                 std::cout << "[Trimmer] Commit " << pct << "% >90% -> hard trim + standby purge" << std::endl;
                 TrimmerTrimAllAggressive();
-                tasx_purge_standby_list();
+                if (tasx_is_elevated()) tasx_purge_standby_list();
             } else {
                 TrimmerTrimAllAggressive();
             }
@@ -216,18 +217,27 @@ DWORD WINAPI SchedulerThread(LPVOID)
         }
 
         if (h) {
-            // Check commit >90 inside trim path as well (periodic)
+            // Check commit >90 inside trim path as well (periodic).
+            // Even under pressure: never touch focused (handled above),
+            // skip processes already below TrimSkipBelowMB (trimming them
+            // only causes re-faults for zero gain).
             int pct = tasx_get_commit_percent();
             if (pct >= 90) {
-                std::cout << "[Trimmer] Commit " << pct << "% -> force hard trim PID " << pid << std::endl;
-                HardTrim(h);
-                ++trimmed;
-                // also purge standby once per cycle
-                static std::int64_t lastPurge = 0;
-                std::int64_t now = NowMs();
-                if (now - lastPurge > 30000) {
-                    tasx_purge_standby_list();
-                    lastPurge = now;
+                if (BelowSkipThresholdCached(pid)) {
+                    ++skipped;
+                } else {
+                    if (LogRateLimit("trim-commit90", 60))
+                        std::cout << "[Trimmer] Commit " << pct << "% -> hard trim PID "
+                                  << pid << " (reason: commit-critical)" << std::endl;
+                    HardTrim(h);
+                    ++trimmed;
+                    // also purge standby once per cycle
+                    static std::int64_t lastPurge = 0;
+                    std::int64_t now = NowMs();
+                    if (now - lastPurge > 30000) {
+                        if (tasx_is_elevated()) tasx_purge_standby_list();
+                        lastPurge = now;
+                    }
                 }
             } else if (BelowSkipThresholdCached(pid)) {
                 ++skipped;
@@ -258,7 +268,7 @@ DWORD WINAPI SchedulerThread(LPVOID)
             }
 
             std::lock_guard<std::mutex> lk(g_mtx);
-            g_heap.push({NowMs() + IntervalMs(), pid});
+            g_heap.push({NowMs() + IntervalMs() + (std::int64_t)(pid % 5) * 1000, pid});
         } else {
             // stale entry (client released): drop, no re-push
             std::lock_guard<std::mutex> lk(g_mtx);
@@ -310,7 +320,9 @@ bool StartTrimmer(DWORD pid, HANDLE processHandle)
         if (g_handles.count(pid)) return true;
 
         g_handles[pid] = processHandle;
-        g_heap.push({NowMs() + IntervalMs(), pid});
+        // Jitter deadlines by PID so N clients don't trim in one burst
+        // (thundering herd -> fault storm). Deterministic, no rand() needed.
+        g_heap.push({NowMs() + IntervalMs() + (std::int64_t)(pid % 7) * 1000, pid});
         // initialize unfocused tracking: if not focused, start counting
         if (g_focusedPid.load() != pid) {
             if (g_unfocusedSince.find(pid) == g_unfocusedSince.end())
@@ -320,11 +332,13 @@ bool StartTrimmer(DWORD pid, HANDLE processHandle)
         if (needStart) {
             g_hStop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
             g_hWake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-            // LowMem notification, may fail without privilege
-            g_hLowMem = CreateMemoryResourceNotification(LowMemoryResourceNotification);
-            if (!g_hLowMem) {
-                std::cout << "[Trimmer] LowMem notification unavailable, using interval only" << std::endl;
-            }
+            // NOTE: no CreateMemoryResourceNotification here by design.
+            // The single LowMem owner is master.cpp LowMemReactorStart
+            // (it does standby + aggressive + SystemClean gating with
+            // SystemCleanMinIntervalSec). A second watcher in this module
+            // caused double-trim on every signal. g_hLowMem stays null and
+            // the scheduler below runs on pure interval deadlines.
+            g_hLowMem = nullptr;
         }
     }
 
@@ -370,6 +384,9 @@ void TrimmerRemoveWorkingSet(DWORD pid)
 
 void TrimmerTrimAll()
 {
+    // Legacy entry: soft-only by design. Hard trim lives exclusively in
+    // TrimmerTrimAllAggressive with unfocused-age + skip-threshold guards.
+    // Focused instance is never touched.
     std::vector<HANDLE> targets;
     DWORD focused = g_focusedPid.load();
 
@@ -382,26 +399,45 @@ void TrimmerTrimAll()
 
     for (HANDLE h : targets) {
         SoftTrim(h);
-        // TrimmerTrimAll is called from LowMem reactor - do hard as well? Spec says aggressive -> hard
-        // Keep soft+hard for TrimAll legacy: do hard
-        HardTrim(h);
     }
 }
 
 void TrimmerTrimAllAggressive()
 {
-    std::vector<HANDLE> targets;
+    // Hard trim ONLY for long-inactive background clients:
+    // unfocused longer than 2x current interval. Everyone else gets soft.
+    // Below-TrimSkipBelowMB processes are skipped entirely (0 syscalls
+    // beyond the cached check). Focused instance is never touched.
     DWORD focused = g_focusedPid.load();
+    int skipMB = config_get_int("TASX", "TrimSkipBelowMB", 150);
+    std::int64_t now = NowMs();
+    std::int64_t interval = IntervalMs();
+    std::vector<HANDLE> soft;
+    std::vector<HANDLE> hard;
     {
         std::lock_guard<std::mutex> lock(g_mtx);
-        for (auto& kv : g_handles)
-            if (kv.first != focused)
-                targets.push_back(kv.second);
+        for (auto& kv : g_handles) {
+            if (kv.first == focused) continue;
+            auto itW = g_wsCache.find(kv.first);
+            auto itT = g_wsTime.find(kv.first);
+            if (skipMB > 0 && itW != g_wsCache.end() && itT != g_wsTime.end() &&
+                (now - itT->second) <= 30000 &&
+                itW->second < (SIZE_T)((SIZE_T)skipMB << 20))
+                continue; // below threshold, fresh cache: skip
+            auto itU = g_unfocusedSince.find(kv.first);
+            std::int64_t age = (itU != g_unfocusedSince.end()) ? (now - itU->second) : 0;
+            if (age > 2 * interval)
+                hard.push_back(kv.second);
+            else
+                soft.push_back(kv.second);
+        }
     }
-    for (HANDLE h : targets) {
-        SoftTrim(h);
-        HardTrim(h);
-    }
+    for (HANDLE h : soft) SoftTrim(h);
+    for (HANDLE h : hard) HardTrim(h);
+    if (!soft.empty() || !hard.empty())
+        std::cout << "[Trimmer] Aggressive: " << soft.size() << " soft, "
+                  << hard.size() << " hard (reason: low-mem/commit, focused untouched)"
+                  << std::endl;
 }
 
 void StopAllTrimmers()

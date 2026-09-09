@@ -368,7 +368,9 @@ void ApplyFocusIfChanged()
         AudioUnmuteByPid(pid);
         TrimmerSetFocused(pid);
         g_appliedFocus = pid;
-        UpdateWorkingSetCache();
+        // NOTE: no UpdateWorkingSetCache() here — the 10s periodic refresh
+        // covers it. A full NtQuerySystemInformation scan on every focus
+        // switch is a syscall storm during fast Alt-Tab.
     }
     else if (!isRoblox && g_appliedFocus)
     {
@@ -386,7 +388,6 @@ void ApplyFocusIfChanged()
         // Ensure focused pid itself is unmuted if it was muted before (should already)
         TrimmerSetFocused(0);
         g_appliedFocus = 0;
-        UpdateWorkingSetCache();
     }
 
     // BUG 5: rewrite the dynamic job profile only when the focus STATE
@@ -427,10 +428,12 @@ void TimerOff()
 }
 
 /* Full-system memory pass: standby purge + empty every working set. Needs
-   elevation; failure is logged once so the log doesn't spam. */
+   elevation; without admin this is a silent no-op (the limited-mode banner
+   at startup already told the user). */
 void SystemCleanPass(bool announce)
 {
     if (!config_get_bool("TASX", "SystemCleaner", 1)) return;
+    if (!tasx_is_elevated()) return;
 
     static bool warned = false;
 
@@ -487,7 +490,7 @@ void HandleRobloxCreated(DWORD pid)
     ApplyFocusIfChanged(); /* the new instance may already be the foreground */
 
     if (isNew && g_rbxHandles.count(pid)) {
-        if (config_get_bool("TASX", "PurgeStandbyOnLaunch", 1)) {
+        if (tasx_is_elevated() && config_get_bool("TASX", "PurgeStandbyOnLaunch", 1)) {
             if (tasx_purge_standby_list())
                 std::cout << "[TASX] Standby list purged (RAM reclaimed for the game)"
                           << std::endl;
@@ -540,9 +543,15 @@ int RunTasx()
 
     SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
 
+    bool elevated = tasx_is_elevated() != 0;
+
     CpuInit();
-    if (config_get_bool("TASX", "DisableCpuBoost", 0))
-        CpuSetBoostMode(0);
+    if (config_get_bool("TASX", "DisableCpuBoost", 0)) {
+        if (elevated)
+            CpuSetBoostMode(0);
+        else if (LogRateLimit("boost-noadmin", 3600))
+            std::cout << "[TASX] DisableCpuBoost skipped (needs admin)" << std::endl;
+    }
     TweaksApplyOneShot();
     FFlagsApply();
     NetCacheApply();
@@ -550,6 +559,34 @@ int RunTasx()
 
     bool jobsOk = JobsInit();
     (void)jobsOk;
+
+    // Startup banner: admin status, job mode, enabled/disabled features.
+    // Printed ONCE — replaces the old per-feature "needs admin" spam.
+    std::cout << "[TASX] Admin: " << (elevated ? "YES (elevated)" : "NO (limited mode)")
+              << " | Job mode: "
+              << (jobsOk ? "native cgroup + per-process focus" : "per-process fallback")
+              << std::endl;
+    if (!elevated) {
+        std::cout << "[TASX] Limited mode WITHOUT admin — DISABLED: standby purge, "
+                     "system cleaner, HKLM tweaks, ETW, CPU boost. ENABLED: priority, "
+                     "affinity, FFlags, crash-handler kill, trimmer(soft). "
+                     "Run Install\\ScheduledTaskInstaller.bat for full effect."
+                  << std::endl;
+    } else {
+        std::cout << "[TASX] Features: priority, affinity, jobs, FFlags, trimmer, "
+                     "standby purge, system cleaner, HKLM tweaks — all ENABLED"
+                  << std::endl;
+    }
+
+    // FPS config sanity: UncapFps=1 makes TargetFps meaningless (FFlags
+    // writer ignores it and uncapps to 999). Warn once instead of silently
+    // clamping to 30 as before.
+    if (config_get_bool("Roblox", "UncapFps", 1)) {
+        int tf = config_get_int("Roblox", "TargetFps", 999);
+        if (tf < 240)
+            std::cout << "[FFlags] WARNING: UncapFps=1 conflicts with TargetFps="
+                      << tf << " -> TargetFps ignored (uncapped)" << std::endl;
+    }
 
     g_wmiOk = _wmimon();
     if (!g_wmiOk)

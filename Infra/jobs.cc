@@ -25,7 +25,9 @@ HANDLE g_jobBackground = nullptr;
 HANDLE g_iocp = nullptr;
 HANDLE g_iocpThread = nullptr;
 DWORD  g_iocpThreadId = 0;
-std::unordered_map<DWORD, int> g_pidJob; // pid -> 0 bg, 1 focus
+// pid -> 0 in background cgroup, 1 in focus cgroup, -1 per-process fallback
+// (foreign job / denied). -1 is sticky: never retry assign for that PID.
+std::unordered_map<DWORD, int> g_pidJob; // pid -> 0 bg, 1 focus, -1 fallback
 std::unordered_set<DWORD> g_knownPids;
 
 /* Background policy cache for JobsRefreshDynamic */
@@ -107,17 +109,12 @@ bool ApplyLimitsToJob(HANDLE job, bool focused, DWORD_PTR bgMaskForBg)
                                         &crc, sizeof(crc));
             }
         }
-        // IO priority group. BUG 10: tasx_job_set_io_priority returns 0
-        // ("not applied, use per-process"), so enforce VeryLow on every
-        // assigned process ourselves.
-        if (tasx_job_set_io_priority(job, 0) == 0) {
-            for (const auto& kv : g_pidJob) {
-                HANDLE hp = OpenProcess(PROCESS_SET_INFORMATION, FALSE, kv.first);
-                if (!hp) continue;
-                tasx_set_io_priority(hp, 0); /* VeryLow for background */
-                CloseHandle(hp);
-            }
-        }
+        // IO priority group. Job-level IO priority is not portable
+        // (see tasx_job_set_io_priority: always "use per-process").
+        // Per-process VeryLow is set once in JobHookProcess for the newly
+        // assigned PID — no O(N) OpenProcess loop here (was a syscall storm
+        // on every JobsRefreshDynamic with 100+ clients).
+        (void)tasx_job_set_io_priority;
 
         // ETW suppression for background
         if (config_get_bool("ETW", "DisableTelemetry", 1) ||
@@ -236,28 +233,34 @@ bool JobHookProcess(DWORD pid, HANDLE hProc)
 {
     std::lock_guard<std::mutex> lock(g_mtx);
     if (!g_jobBackground) return false;
-    if (g_pidJob.find(pid) != g_pidJob.end()) return true; // already tracked
+    auto known = g_pidJob.find(pid);
+    if (known != g_pidJob.end())
+        return known->second != -1; // already tracked: job or sticky fallback
 
     // Try assign to background job. One syscall.
     if (!tasx_job_assign(g_jobBackground, hProc)) {
-        // Fallback: if already in a job (ERROR_ALREADY_ASSIGNED), try direct AssignProcessToJobObject
-        // and if still fails, return false for per-process fallback
+        // Assign-once semantics: a process can live in exactly one Job.
+        // ERROR_ALREADY_ASSIGNED = foreign job (launcher/manager) — retry
+        // is pointless. ERROR_ACCESS_DENIED = integrity/protection level
+        // (no admin, PPL) — retry is pointless too. Mark sticky fallback.
         DWORD err = GetLastError();
-        if (err == ERROR_ALREADY_ASSIGNED || err == ERROR_ACCESS_DENIED) {
-            // Process already in a job (maybe from previous TASX run or parent) - try to update limits instead
-            // BUG 4: per-PID rate limit - a stuck PID would otherwise spam
-            // this line on every discovery/refresh pass.
-            static std::unordered_set<DWORD> warnedErr5;
-            if (warnedErr5.find(pid) == warnedErr5.end()) {
-                warnedErr5.insert(pid);
-                std::cout << "[Jobs] PID " << pid << " already in job (err " << err << ") -> fallback to limit rewrite" << std::endl;
-            }
-            // Still track as background logically
-            g_pidJob[pid] = 0;
-            g_knownPids.insert(pid);
-            return false; // signal caller to use CpuApply fallback? But spec wants return true even if assign fails? Let's return false to trigger fallback.
+        g_pidJob[pid] = -1;
+        g_knownPids.insert(pid);
+        if (err == ERROR_ALREADY_ASSIGNED) {
+            if (LogRateLimit("job-foreign", 300))
+                std::cout << "[Jobs] PID " << pid
+                          << " already in foreign job -> per-process mode (no retry)"
+                          << std::endl;
+        } else if (err == ERROR_ACCESS_DENIED) {
+            if (LogRateLimit("job-denied", 60))
+                std::cout << "[Jobs] PID " << pid
+                          << " assign denied (err 5) -> per-process fallback"
+                          << std::endl;
+        } else {
+            if (LogRateLimit("job-assign-fail", 30))
+                std::cout << "[Jobs] PID " << pid << " assign to background failed | Code: "
+                          << err << std::endl;
         }
-        std::cout << "[Jobs] PID " << pid << " assign to background failed | Code: " << err << std::endl;
         return false;
     }
 
@@ -277,49 +280,17 @@ bool JobApplyProfile(DWORD pid, int focused)
     std::lock_guard<std::mutex> lock(g_mtx);
     auto it = g_pidJob.find(pid);
     if (it == g_pidJob.end()) return false; // not job-tracked, caller will use CpuApply
+    if (it->second == -1) return false;     // sticky fallback: no assign attempts
+    if (it->second == (focused ? 1 : 0)) return true; // already correct — 0 syscalls
 
-    HANDLE hTarget = focused ? g_jobFocus : g_jobBackground;
-    HANDLE hCurrent = (it->second == 1) ? g_jobFocus : g_jobBackground;
-    if (hTarget == hCurrent) return true; // already in correct job
-
-    // Need handle to process for assignment
-    HANDLE hProc = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_SET_INFORMATION,
-                               FALSE, pid);
-    if (!hProc) {
-        // process may have exited
-        return false;
-    }
-
-    bool ok = tasx_job_assign(hTarget, hProc) != 0;
-    DWORD err = GetLastError();
-    CloseHandle(hProc);
-
-    if (ok) {
-        it->second = focused ? 1 : 0;
-        // Update power throttling one-shot
-        HANDLE h2 = OpenProcess(PROCESS_SET_INFORMATION, FALSE, pid);
-        if (h2) {
-            tasx_process_power_throttling(h2, focused ? 0 : 1);
-            CloseHandle(h2);
-        }
-        std::cout << "[TASX] PID " << pid << (focused ? " -> FOCUS cgroup" : " -> background cgroup") << std::endl;
-        return true;
-    } else {
-        // Assign failed (already in job). Fallback: rewrite limits of the current job?
-        // For sibling jobs, process already in one job cannot be moved to another.
-        // Fallback is to rewrite the global job limits? But that would affect all.
-        // Instead fallback to per-process CpuApply via return false so master does CpuApplyFocusProfile.
-        // Log and keep logical state flipped so next call doesn't retry assign storm.
-        // BUG 4: same per-PID rate limit as JobHookProcess.
-        static std::unordered_set<DWORD> warnedMoveErr5;
-        if (warnedMoveErr5.find(pid) == warnedMoveErr5.end()) {
-            warnedMoveErr5.insert(pid);
-            std::cout << "[Jobs] PID " << pid << " move to " << (focused?"focus":"bg")
-                      << " failed (err " << err << ") -> per-process fallback" << std::endl;
-        }
-        // Do not update it->second, keep as is, caller will handle via Cpu path
-        return false;
-    }
+    // A process in one Job can NEVER be moved to a sibling Job via
+    // AssignProcessToJobObject (always ERROR_ACCESS_DENIED). Retrying the
+    // move is what produced the "[Jobs] move to focus failed (err 5)" spam.
+    // Focus differentiation for job-tracked processes is therefore done by
+    // the caller via per-process CpuApplyFocusProfile (priority/affinity/
+    // EcoQoS) — the shared background cgroup keeps only the farm-wide
+    // CPU/MEM caps. No syscall, no log here by design.
+    return false;
 }
 
 void JobsRefreshDynamic(int anyFocused)

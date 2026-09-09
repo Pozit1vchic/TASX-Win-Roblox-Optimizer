@@ -307,6 +307,22 @@ int tasx_empty_working_sets_system(void)
     return 0;
 }
 
+int tasx_is_elevated(void)
+{
+    HANDLE tok = NULL;
+    TOKEN_ELEVATION el;
+    DWORD ret = 0;
+    int elevated = 0;
+
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok))
+        return 0;
+    memset(&el, 0, sizeof(el));
+    if (GetTokenInformation(tok, TokenElevation, &el, sizeof(el), &ret))
+        elevated = (el.TokenIsElevated != 0);
+    CloseHandle(tok);
+    return elevated;
+}
+
 /* --- Job Objects ----------------------------------------------------- */
 
 HANDLE tasx_job_create(void)

@@ -14,6 +14,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -91,8 +92,19 @@ void BuildFlagPlan(FlagPlan& plan)
     bool injectorOwnsGraphics = config_get_bool("TASX", "InjectorOwnsGraphics", 1);
     if (!injectorOwnsGraphics) {
 
-    /* FPS unlock — the headline lever. */
+    /* FPS unlock — the headline lever.
+       UncapFps=1 means "no cap": TargetFps is IGNORED (uncapped to 999).
+       TargetFps applies ONLY when UncapFps=0 (e.g. background cap).
+       The old silent clamp (fps<30 -> 30) turned UncapFps=1+TargetFps=10
+       into a 30 FPS cap with zero warning — the exact conflict from logs. */
     if (config_get_bool("Roblox", "UncapFps", 1)) {
+        int raw = config_get_int("Roblox", "TargetFps", 999);
+        if (raw < 240 && LogRateLimit("fflags-fps-conflict", 3600))
+            std::cout << "[FFlags] WARNING: UncapFps=1 conflicts with TargetFps="
+                      << raw << " -> TargetFps ignored (uncapped)" << std::endl;
+        set("DFIntTaskSchedulerTargetFps", "999");
+        set("FFlagTaskSchedulerLimitTargetFpsTo2402", "False");
+    } else {
         int fps = config_get_int("Roblox", "TargetFps", 999);
         if (fps < 30) fps = 30;
         set("DFIntTaskSchedulerTargetFps", std::to_string(fps));
@@ -162,6 +174,38 @@ bool ApplyToVersion(const std::wstring& versionDir, const FlagPlan& plan)
     std::wstring clientDir = versionDir + L"\\ClientSettings";
     std::wstring jsonPath = clientDir + L"\\ClientAppSettings.json";
 
+    // mtime+size pre-check: skip the read entirely when neither the file
+    // nor our plan changed since the last pass (farm spawns 100 clients —
+    // re-reading every JSON on every spawn is pure I/O waste).
+    // Key = json path, value = (planHash, fileSize, mtimeLow+High).
+    static std::unordered_map<std::wstring, unsigned long long> s_planCache;
+    static std::unordered_map<std::wstring, unsigned long long> s_fileCache;
+    unsigned long long planHash = 1469598103934665603ull; // FNV-1a
+    auto mix = [&](const std::string& s) {
+        for (unsigned char c : s) {
+            planHash ^= c;
+            planHash *= 1099511628211ull;
+        }
+        planHash ^= 0x9e3779b9u;
+    };
+    for (auto& kv : plan.set) { mix(kv.first); mix(kv.second); }
+    for (auto& k : plan.remove) mix(k);
+    {
+        WIN32_FILE_ATTRIBUTE_DATA fad{};
+        if (GetFileAttributesExW(jsonPath.c_str(), GetFileExInfoStandard, &fad)) {
+            unsigned long long fkey =
+                (((unsigned long long)fad.nFileSizeLow) |
+                 ((unsigned long long)fad.nFileSizeHigh << 32)) ^
+                (((unsigned long long)fad.ftLastWriteTime.dwLowDateTime) |
+                 ((unsigned long long)fad.ftLastWriteTime.dwHighDateTime << 32));
+            auto itp = s_planCache.find(jsonPath);
+            auto itf = s_fileCache.find(jsonPath);
+            if (itp != s_planCache.end() && itf != s_fileCache.end() &&
+                itp->second == planHash && itf->second == fkey)
+                return false; // already in desired state, verified last pass
+        }
+    }
+
     CreateDirectoryW(clientDir.c_str(), nullptr);
 
     std::ifstream in(jsonPath.c_str(), std::ios::binary);
@@ -174,7 +218,20 @@ bool ApplyToVersion(const std::wstring& versionDir, const FlagPlan& plan)
     for (const auto& kv : plan.set) flags[kv.first] = kv.second;
 
     std::string merged = SerializeFlags(flags);
-    if (merged == existing) return false; /* nothing to do */
+    if (merged == existing) {
+        // Record verified state so the next pass skips the read via mtime.
+        WIN32_FILE_ATTRIBUTE_DATA fad{};
+        if (GetFileAttributesExW(jsonPath.c_str(), GetFileExInfoStandard, &fad)) {
+            unsigned long long fkey =
+                (((unsigned long long)fad.nFileSizeLow) |
+                 ((unsigned long long)fad.nFileSizeHigh << 32)) ^
+                (((unsigned long long)fad.ftLastWriteTime.dwLowDateTime) |
+                 ((unsigned long long)fad.ftLastWriteTime.dwHighDateTime << 32));
+            s_planCache[jsonPath] = planHash;
+            s_fileCache[jsonPath] = fkey;
+        }
+        return false; /* nothing to do */
+    }
 
     std::wstring tmpPath = jsonPath + L".tasx.tmp";
     std::ofstream out(tmpPath.c_str(), std::ios::binary | std::ios::trunc);
@@ -188,8 +245,27 @@ bool ApplyToVersion(const std::wstring& versionDir, const FlagPlan& plan)
 
     if (!MoveFileExW(tmpPath.c_str(), jsonPath.c_str(),
                      MOVEFILE_REPLACE_EXISTING)) {
+        DWORD err = GetLastError();
         DeleteFileW(tmpPath.c_str());
+        // Deleted/locked version dir during Roblox update — not fatal.
+        if (LogRateLimit("fflags-movefail", 60))
+            std::cout << "[FFlags] Skip " << WideToUtf8(versionDir)
+                      << " (locked/removed, err " << err << ")" << std::endl;
         return false;
+    }
+
+    // Refresh cache to post-write state.
+    {
+        WIN32_FILE_ATTRIBUTE_DATA fad{};
+        if (GetFileAttributesExW(jsonPath.c_str(), GetFileExInfoStandard, &fad)) {
+            unsigned long long fkey =
+                (((unsigned long long)fad.nFileSizeLow) |
+                 ((unsigned long long)fad.nFileSizeHigh << 32)) ^
+                (((unsigned long long)fad.ftLastWriteTime.dwLowDateTime) |
+                 ((unsigned long long)fad.ftLastWriteTime.dwHighDateTime << 32));
+            s_planCache[jsonPath] = planHash;
+            s_fileCache[jsonPath] = fkey;
+        }
     }
 
     if (LogRateLimit("fflags-applied", 10))
@@ -201,22 +277,23 @@ bool ApplyToVersion(const std::wstring& versionDir, const FlagPlan& plan)
 } /* namespace */
 
 /* Scans <root>\<version>\ for installed clients (any layout where a folder
-   contains RobloxPlayerBeta.exe gets a ClientSettings subfolder). */
+   contains RobloxPlayerBeta.exe gets a ClientSettings subfolder).
+   Counts: scanned = version dirs found, applied = files actually rewritten. */
 void ScanVersionsRoot(const std::wstring& root, const FlagPlan& plan,
-                      int& processed)
+                      int& scanned, int& applied)
 {
     /* Root itself may be a client dir (portable installs). */
     if (GetFileAttributesW((root + L"\\RobloxPlayerBeta.exe").c_str()) !=
         INVALID_FILE_ATTRIBUTES)
     {
-        ApplyToVersion(root, plan);
-        ++processed;
+        ++scanned;
+        if (ApplyToVersion(root, plan)) ++applied;
         return;
     }
 
     WIN32_FIND_DATAW fd{};
     HANDLE find = FindFirstFileW((root + L"\\*").c_str(), &fd);
-    if (find == INVALID_HANDLE_VALUE) return;
+    if (find == INVALID_HANDLE_VALUE) return; // removed/unavailable root — not fatal
 
     do {
         if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
@@ -228,8 +305,8 @@ void ScanVersionsRoot(const std::wstring& root, const FlagPlan& plan,
         if (GetFileAttributesW(clientExe.c_str()) == INVALID_FILE_ATTRIBUTES)
             continue;
 
-        ApplyToVersion(versionDir, plan);
-        ++processed;
+        ++scanned;
+        if (ApplyToVersion(versionDir, plan)) ++applied;
     } while (FindNextFileW(find, &fd));
 
     FindClose(find);
@@ -238,20 +315,21 @@ void ScanVersionsRoot(const std::wstring& root, const FlagPlan& plan,
 void FFlagsApply()
 {
     if (config_get_bool("TASX", "InjectorOwnsGraphics", 1)) {
-        // BUG 7: the contract is handled inside BuildFlagPlan - the plan now
-        // contains only telemetry keys, and ApplyToVersion still performs the
-        // atomic read-modify-write preserving all injector-owned flags.
-        std::cout << "[FFlags] InjectorOwnsGraphics=1 — writing telemetry only"
-                  << std::endl;
+        // Contract handled inside BuildFlagPlan — plan contains only
+        // telemetry keys, ApplyToVersion preserves injector-owned flags.
+        // Once per hour max: was spammed on every process spawn.
+        if (LogRateLimit("fflags-injector", 3600))
+            std::cout << "[FFlags] InjectorOwnsGraphics=1 — writing telemetry only"
+                      << std::endl;
     }
     FlagPlan plan;
     BuildFlagPlan(plan);
-    int processed = 0;
+    int scanned = 0, applied = 0;
 
     wchar_t localAppData[MAX_PATH] = {};
     if (GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH))
         ScanVersionsRoot(std::wstring(localAppData) + L"\\Roblox\\Versions",
-                         plan, processed);
+                         plan, scanned, applied);
 
     /* Extra roots for portable / multi-manager installs, e.g.
        ExtraVersionsDirs=D:\RobloxMultiManager\clients;E:\RBX */
@@ -276,13 +354,14 @@ void FFlagsApply()
         std::wstring wItem(n - 1, L'\0');
         MultiByteToWideChar(CP_UTF8, 0, item.c_str(), -1, &wItem[0], n);
 
-        size_t before = processed;
-        ScanVersionsRoot(wItem, plan, processed);
-        if (processed > before)
+        int before = scanned;
+        ScanVersionsRoot(wItem, plan, scanned, applied);
+        if (scanned > before && LogRateLimit("fflags-extraroot", 60))
             std::cout << "[FFlags] Extra root processed: " << item << std::endl;
     }
 
-    if (processed)
-        std::cout << "[FFlags] " << processed
-                  << " Roblox client version(s) processed" << std::endl;
+    // Log only real work: silent when everything already in desired state.
+    if (applied)
+        std::cout << "[FFlags] " << applied << " file(s) rewritten, "
+                  << scanned << " version(s) scanned" << std::endl;
 }

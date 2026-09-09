@@ -2,10 +2,14 @@
 
 #include <windows.h>
 
-/* Two-job model: one focus job (no cap) and one background job (capped).
-   Each Roblox process is assigned to exactly one of them and moved on
-   focus change via AssignProcessToJobObject — one syscall instead of
-   per-thread NtSetInformationProcess. */
+/* Job model: ONE shared background cgroup (CPU/MEM caps for the farm)
+   + per-process focus profiles (priority/affinity/EcoQoS via CPU.cc).
+   A process is assigned to the background job exactly ONCE at hook time;
+   it is NEVER moved between sibling jobs (Windows forbids that — always
+   ERROR_ACCESS_DENIED). JobApplyProfile is therefore idempotent and
+   syscall-free: it returns true only if already correct, false to let the
+   caller apply the per-process profile. PID state: 0 in cgroup, -1 sticky
+   per-process fallback (foreign job / denied, never retried). */
 
 bool JobsInit();
 void JobShutdown();

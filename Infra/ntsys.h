@@ -43,6 +43,10 @@ int tasx_purge_standby_list(void);
 /* Empty all process working sets system-wide. Also privileged. */
 int tasx_empty_working_sets_system(void);
 
+/* 1 if the current process is elevated (UAC admin token), 0 otherwise.
+   Cheap: OpenProcessToken + TokenElevation, no caching needed at startup. */
+int tasx_is_elevated(void);
+
 /* --- Job Objects (2-job model: focus / background) -------------------- */
 
 /* Create a Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.

@@ -1,6 +1,8 @@
 #include "tweaks.h"
 
 #include "config.h"
+#include "ntsys.h"
+#include "lograte.h"
 
 #include <windows.h>
 #include <iostream>
@@ -160,15 +162,21 @@ void TweaksApplyOneShot()
 {
     if (!config_get_bool("TASX", "ApplyTweaks", 1)) return;
 
+    bool elevated = tasx_is_elevated() != 0;
+    if (!elevated && LogRateLimit("tweaks-hklm-skip", 3600))
+        std::cout << "[TASX] HKLM tweaks skipped (needs admin) — HKCU tweaks still applied"
+                  << std::endl;
+
     /* Game DVR off — its background capture pipeline costs FPS. */
     SetRegValueDWORD(HKEY_CURRENT_USER,
         L"System\\GameConfigStore", L"GameDVR_Enabled", 0, "GameDVR_Enabled=0");
     SetRegValueDWORD(HKEY_CURRENT_USER,
         L"Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR",
         L"AppCaptureEnabled", 0, "AppCaptureEnabled=0");
-    SetRegValueDWORD(HKEY_LOCAL_MACHINE,
-        L"SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR",
-        L"AllowGameDVR", 0, "AllowGameDVR policy=0");
+    if (elevated)
+        SetRegValueDWORD(HKEY_LOCAL_MACHINE,
+            L"SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR",
+            L"AllowGameDVR", 0, "AllowGameDVR policy=0");
 
     /* Route Roblox to the high-performance GPU. */
     SetRegValueString(HKEY_CURRENT_USER,
@@ -185,6 +193,7 @@ void TweaksApplyOneShot()
         L"AllowAutoGameMode", 1, "AllowAutoGameMode=1");
 
     /* MMCSS: no network throttling, system tuned for foreground work. */
+    if (elevated) {
     SetRegValueDWORD(HKEY_LOCAL_MACHINE,
         L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile",
         L"NetworkThrottlingIndex", 0xFFFFFFFFu, "NetworkThrottlingIndex=off");
@@ -216,9 +225,11 @@ void TweaksApplyOneShot()
         L"USERProcessHandleQuota", 18000, "USERProcessHandleQuota=18000");
 
     ExpandDesktopHeap();
+    }
 
-    std::cout << "[TASX] One-shot tweaks done (HKLM entries require admin; "
-                 "run via ScheduledTaskInstaller for full effect)" << std::endl;
+    std::cout << "[TASX] One-shot tweaks done"
+              << (elevated ? " (HKCU+HKLM)" : " (HKCU only, HKLM needs admin)")
+              << std::endl;
 }
 
 void TweaksPowerEnter()
