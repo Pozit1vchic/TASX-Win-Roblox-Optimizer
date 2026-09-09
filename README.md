@@ -1,116 +1,97 @@
-# TASX Optimizer
+# TASX Optimizer 🚀
 
-TASX is an optimizer designed to aid in combatting Roblox engine's not-so-good optimization and memory hogging, while increasing FPS. No, this will not get you banned, it is not a cheat.
+> **Внимание:** Это не чит. Это не магия. Это просто код, который делает то, что Microsoft забыла сделать за 30 лет существования Windows.
 
-## What does it do?
+TASX — это оптимизатор, созданный для борьбы с ужасной оптимизацией движка Roblox и его привычкой жрать память как не в себя. Если у вас лагает, а FPS стремится к нулю — возможно, вам сюда. Если нет — зачем вы здесь?
 
-TASX watches for Roblox processes (WMI process watcher + event-driven foreground hook, with a polling safety net) and continuously rebalances the system around them:
+## 🤔 Что оно вообще делает?
 
-**Focused instance (the window you play in)**
+TASX следит за процессами Roblox (через WMI, хуки и прочие страшные слова) и перераспределяет ресурсы системы так, чтобы ваша игра работала, а не умирала мучительной смертью.
 
-- `HIGH_PRIORITY_CLASS` + full CPU affinity
-- Exempt from Windows EcoQoS / power throttling (proper `PROCESS_POWER_THROTTLING_STATE`)
-- Normal I/O & memory priority
-- 0.5 ms system timer resolution for smoother frame pacing
+###  Активное окно (То, в которое вы тыкаете мышкой)
+- **Приоритет:** `HIGH_PRIORITY_CLASS` + полный доступ ко всем ядрам CPU.
+- **Энергосбережение:** Выключено. Windows не будет душить ваш процесс ради "экологии".
+- **Таймер:** Разрешение 0.5 мс для плавности кадров (потому что стандартные 15 мс — это для калькуляторов).
 
-**Background instances (multi-account farming)**
+### 📉 Фоновые окна (Для тех, кто фармит на 10 аккаунтах одновременно)
+- **Приоритет:** `IDLE_PRIORITY_CLASS`. Засунуто на энергоэффективные ядра (E-cores), если они есть.
+- **Режим эффективности:** Включен EcoQoS. I/O и память имеют минимальный приоритет.
+- **Очистка памяти:** Рабочий набор обрезается по расписанию. **Важно:** Пока окно активно, ничего не режется, чтобы не было фризов.
 
-- `IDLE_PRIORITY_CLASS`, pinned to efficiency cores on hybrid CPUs (or the low half of the CPU otherwise)
-- Windows Efficiency Mode (process-level EcoQoS only, no per-thread enumeration), VeryLow I/O priority, VeryLow memory priority
-- Working set trimmed on a schedule — soft for recently unfocused, hard only for long-inactive — **never while focused**, so trimming can't cause in-game stutter; below `TrimSkipBelowMB` is skipped (0 syscalls, cached)
+### 🌍 Системные твики
+- Отключение Game DVR и фоновой записи (они только мешают).
+- Сеть: отключение троттлинга (`SystemResponsiveness=0`).
+- GPU: Принудительная высокая производительность для `RobloxPlayerBeta.exe`.
+- Питание: Переключение схемы на "Ultimate Performance" во время игры.
+- Очистка Standby List: Мгновенная очистка кэша памяти при запуске Roblox (требует админа).
+- Убийство `RobloxCrashHandler.exe`: Потому что он бесполезен и только занимает место.
+- **FastFlags:** Автоматическая настройка JSON конфигов для каждого клиента (снятие лимита FPS, выбор рендерера, отключение телеметрии).
 
-**System-wide**
+## 🤝 Совместимость с Инжекторами
 
-- Game DVR / background capture off, MMCSS `Games` profile raised, network throttling off (`SystemResponsiveness=0`)
-- High-performance GPU preference registered for the actual `RobloxPlayerBeta.exe` path (falls back to exe name)
-- Power scheme switched to Ultimate/High Performance while Roblox runs, restored afterwards
-- Standby memory list purged the moment Roblox launches (needs admin, otherwise safe-mode without HKLM/standby/system-cleaner)
-- `RobloxCrashHandler.exe` suppressed on an ongoing sweep (job-child filter: only crash handlers are killed)
-- TASX FastFlags: FPS cap removed (uncapped when `UncapFps=1`, otherwise `TargetFps`), optional renderer (Vulkan/D3D11/D3D10/OpenGL), lighting tech (Voxel/ShadowMap/Future), texture quality, telemetry off — merged into every installed client version's `ClientSettings\ClientAppSettings.json` atomically, preserving your own flags; mtime+hash skip avoids redundant rewrites
-- File logging (`[Log] LogFile`, 1 MB rotation to `.old`, simultaneous stdout) with level filter (`LogLevel=info|warn|error`); all log lines go through `LOGI/W/E` and are rate-limited
-- Hot-reload: `TASX.ini` mtime is polled every 10 s on the main loop — edits re-apply FFlags/tweaks/job limits and trimmer thresholds without restart or new threads
+Мы не враги. Мы коллеги.
 
-All of the above is configurable — see `TASX.ini` (documented, optional; sane defaults apply without it).
+| За что отвечаем мы (TASX) | За что отвечает Инжектор |
+|---------------------------|--------------------------|
+| Приоритеты CPU, Affinity, EcoQoS | Графика, качество текстур, лимит FPS |
+| Приоритеты I/O и Памяти | Пер-клиентские настройки RAM |
+| Mute Audio (WASAPI) | ... |
+| Отключение телеметрии | ... |
 
-## Injector Coexistence Contract
+По умолчанию (`InjectorOwnsGraphics=1`) TASX не трогает графические настройки, чтобы не ломать ваши красивые пресеты из инжектора.
 
-TASX and the external FFlags/Injector launcher are designed to share the same clients without conflict.
+## ⚠️ Что нужно знать перед запуском
 
-| Concern | Owner |
-|---------|-------|
-| FPS cap, render quality, per-client RAM cap | External injector |
-| CPU priority, affinity, EcoQoS, I/O+mem priority, job limits | TASX |
-| Audio mute | TASX (WASAPI) |
-| Telemetry disable | Both (FFlags + ETW) |
+1. **Админка обязательна.** Для твиков реестра (HKLM) и очистки памяти нужны права администратора.
+2. **Установка:** Запустите `ScheduledTaskInstaller.bat` один раз. Это создаст задачу "TASX Agent", которая будет запускаться с повышенными привилегиями при старте системы.
+3. **Удаление:** Надоело? Запустите `Uninstall.bat`. Всё почистится.
+4. **Один экземпляр:** Нельзя запустить два TASX одновременно. Система не каменная, но и не бесконечная.
 
-When `InjectorOwnsGraphics=1` (default), `BuildFlagPlan` omits the graphics keys (FPS unlock, Renderer, Lighting, TextureQuality) and TASX writes only the telemetry-disable flags; `ApplyToVersion` still performs the atomic read-modify-write (temp-file + `MoveFileEx`), preserving every injector-owned and user JSON key.
+## 📥 Как скачать и использовать (Для нормальных людей)
 
-## What do I need to know?
+Забудьте про Discord, ссылки и долгие ожидания ответа от поддержки.
 
-- HKLM-level tweaks and the standby-list purge require elevation — run ``ScheduledTaskInstaller.bat`` once (creates the elevated "TASX Agent" startup task). Values are written only when they differ, everything is idempotent.
-- To remove TASX, run ``Uninstall.bat``.
-- Only one TASX instance can run at a time (single-instance guard).
+1. Идите в раздел **[Releases](https://github.com/ВАШ_НИК/TASX/releases)** справа (или сверху, зависит от темы оформления GitHub).
+2. Скачайте последний `.zip` архив.
+3. Распакуйте.
+4. Запустите `ScheduledTaskInstaller.bat` от имени администратора.
+5. Готово. TASX теперь работает в фоне и делает вашу жизнь лучше.
 
-## How do I use this?
+## 💻 Для программистов (Компиляция)
 
-For non-programmers, head over to the [RYFTENIUS Discord](https://hub.ryftenius.com/) & download the latest release in #OPTIMIZER (This comes with the source), install TASX with ``ScheduledTaskInstaller.bat``, to remove use ``Uninstall.bat``.
+Если вы считаете, что можете сделать лучше (спойлер: вряд ли), вот как собрать проект:
 
-This will automatically add TASX to startup as "TASX Agent".
+**Visual Studio:**
+- Откройте `.sln` файл.
+- **Debug**: Сборка с консолью и логами.
+- **Release**: Тихая сборка без окон.
 
-For programmers, open the solution file & compile: **Debug** = console build with logging, **Release** = silent windowed build. Keep in mind ``TASX.exe`` must be in the same DIR as the ``.bat`` files (and optionally ``TASX.ini``) for it to be serviced.
+**MSYS2 / MinGW:**
+Используйте следующие команды в терминале:
 
-Or build from the command line (MSYS2/MinGW):
+- `make` — Консольная версия с логами
+- `make windows` — Тихая GUI-версия
+- `make clean` — Убрать за собой мусор
 
-```bash
-make            # console build with logging
-make windows    # silent GUI-subsystem build
-make clean
-```
+*Примечание:* `TASX.exe` должен лежать в одной папке с `.bat` файлами и `TASX.ini` (если он есть).
 
-## How does it work under the hood?
+## 🧠 Как это работает под капотом (Для гиков)
 
-```
-Infra/
-  master.cpp   Orchestrator: one typed event queue fed by WMI, the job
-               completion port, the foreground hook and the low-memory
-               reactor; single-threaded state machine via InitSubsystems() /
-               ShutdownSubsystems() and a Ctrl-handler (graceful exit,
-               power/Wait/Mutex teardown); hot-reload of TASX.ini by mtime
-  WMI.cc       Async WMI process watcher with Indication-drain (active count
-               + manual-reset event) to avoid Release races; extracts PID
-               straight from TargetInstance.Handle
-  jobs.cc      Single background cgroup (farm CPU/MEM caps, KILL_ON_CLOSE
-               gated by KillOnAgentExit); focus is per-process (priority/
-               affinity/EcoQoS via CPU.cc, never a cross-job move — always
-               ERROR_ACCESS_DENIED); IOCP filters NEW_PROCESS to
-               robloxcrashhandler.exe only
-  CPU.cc       No topology state — single source of truth is ntsys.c
-               (tasx_get_*_mask); per-process scheduling profile + boost toggle
-  trimmer.cc   One scheduler thread + min-heap of trim deadlines: adaptive
-               interval, skip-if-below-threshold, focused never trimmed,
-               soft/hard by unfocused age; no LowMem handle (single owner is
-               the master reactor)
-  stats.cc     Whole-system process snapshot in ONE syscall + helper
-               QueryProcessNameByPid for the job-port filter
-  winhook.cc   EVENT_SYSTEM_FOREGROUND hook (notification only; focus PID is
-               read via GetForegroundWindow — single mechanism)
-  ntsys.c      [C] ntdll/privilege layer + file logging (tasx_log, 1 MB
-               rotation), P/E topology, commit charge, ETW (verified GUIDs)
-  config.c     [C] TASX.ini reader with BOM skip + hot-reload (config_reload)
-  tweaks.cc    One-shot registry tweaks + power scheme; UserGpuPreferences
-               resolves the full exe path; HKLM gated by elevation
-  fflags.cc    Roblox ClientAppSettings.json reader/writer with escaped-quote
-               aware parsing and mtime+hash skip (atomic tmp+MoveFileEx)
-```
+Архитектура построена на событиях, а не на тупых циклах опроса.
 
-Designed for 100+ concurrent clients: no polling loops on the hot path (exits, crash handlers, memory cleaning and discovery are event-driven), ~5 threads total regardless of client count, and one syscall for whole-system state.
+- **Infra/master.cpp**: Оркестратор. Один поток, одна очередь событий. Горячая перезагрузка конфига каждые 10 секунд.
+- **WMI.cc**: Асинхронный наблюдатель за процессами. Никаких гонок данных.
+- **jobs.cc**: Управление группами процессов. Фокус определяется точно, без перемещения между джобами (чтобы не получить `ACCESS_DENIED`).
+- **CPU.cc**: Работа с топологией процессора через `ntsys.c`. Никакого хардкода.
+- **trimmer.cc**: Умная обрезка памяти. Никогда не трогает активное окно.
+- **fflags.cc**: Атомарная запись в `ClientAppSettings.json`. Сохраняет ваши личные флаги, добавляет наши.
 
-The low-level core (`config.c`, `ntsys.c`) is plain C, compiled by the C compiler and linked into the C++ binary; everything that talks to Win32 is resolved dynamically so the binary runs on any Windows 10/11 version.
+Всего ~5 потоков независимо от количества запущенных клиентов Roblox. Эффективность? Да.
 
-## Prereqs (All)
+## 📋 Требования
 
-- Be on Windows
+- **ОС:** Windows 10/11 (другие ОС не поддерживаются, извините, линуксоиды).
+- **Права:** Администратор (для полной функциональности).
 
-## Prereqs (If compiling)
-
-- Visual Studio w/ C++ build tools (C++ 17), or MSYS2/MinGW-w64 (g++ + gcc)
+---
+*Сделано с любовью, ненавистью к лагам и сарказмом.*
