@@ -4,132 +4,86 @@
 
 #include "config.h"
 #include "ntsys.h"
+#include "log.h"
 
 #include <iostream>
-#include <vector>
 #include <psapi.h>
-#include <tlhelp32.h>
 
+#ifdef _MSC_VER
 #pragma comment(lib, "PowrProf.lib")
+#endif
 
 namespace {
 
-struct CoreInfo {
-    DWORD_PTR mask;
-    unsigned short group;
-    unsigned char  efficiencyClass; /* >0 == performance core (hybrid CPUs) */
-};
+/* Single source of truth for topology is ntsys.c (tasx_get_*_mask).
+   This module keeps NO topology state of its own. */
 
-std::vector<CoreInfo> g_cores;
-DWORD     g_logical      = 0;
-DWORD     g_physCores    = 0;
-int       g_isHybrid     = 0;
-DWORD_PTR g_pMask        = 0; /* performance (or all) cores   */
-DWORD_PTR g_eMask        = 0; /* efficiency cores, may be 0   */
-DWORD_PTR g_allMask      = 0;
-DWORD_PTR g_lowHalfMask  = 0; /* first half of the logical CPU */
-bool      g_topologyInit = false;
-bool      g_summaryLogged = false;
+bool g_summaryLogged = false;
 
-DWORD PopCount(DWORD64 m)
+unsigned PopCount(unsigned long long m)
 {
-    DWORD c = 0;
+    unsigned c = 0;
     while (m) { m &= m - 1; ++c; }
     return c;
 }
-
-void InitTopology()
-{
-    if (g_topologyInit) return;
-    g_topologyInit = true;
-
-    ULONG len = 0;
-    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
-    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) return;
-
-    std::vector<BYTE> buffer(len);
-    if (!GetLogicalProcessorInformationEx(
-            RelationProcessorCore,
-            reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(
-                buffer.data()),
-            &len))
-        return;
-
-    BYTE* ptr = buffer.data();
-    BYTE* end = buffer.data() + len;
-    while (ptr < end) {
-        auto* core = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(ptr);
-        if (core->Relationship == RelationProcessorCore &&
-            core->Processor.GroupMask[0].Mask != 0)
-        {
-            CoreInfo ci;
-            ci.mask = core->Processor.GroupMask[0].Mask;
-            ci.group = core->Processor.GroupMask[0].Group;
-            ci.efficiencyClass = core->Processor.EfficiencyClass;
-            g_cores.push_back(ci);
-            g_physCores += 1;
-            g_logical += PopCount(ci.mask);
-            g_allMask |= ci.mask;
-            if (ci.efficiencyClass > 0) {
-                g_isHybrid = 1;
-                g_pMask |= ci.mask;
-            } else if (ci.group == 0) {
-                g_eMask |= ci.mask;
-            }
-        }
-        ptr += core->Size;
-    }
-
-    if (!g_isHybrid) g_pMask = g_allMask;
-
-    /* Low half of the logical CPU (ascending bit order) — used to bench
-       background instances on non-hybrid CPUs. */
-    DWORD half = g_logical >= 2 ? g_logical / 2 : g_logical;
-    DWORD set = 0;
-    for (DWORD bit = 0; bit < 64 && set < half; ++bit) {
-        if (g_allMask & (1ull << bit)) { g_lowHalfMask |= (1ull << bit); ++set; }
-    }
-}
-
-DWORD MaskBits(DWORD_PTR m) { return PopCount((DWORD64)m); }
 
 void LogSummary()
 {
     if (g_summaryLogged) return;
     g_summaryLogged = true;
 
-    if (g_logical == 0) {
-        std::cout << "[TASX] CPU topology unavailable, scheduling profiles degraded" << std::endl;
+    unsigned long long all =
+        (unsigned long long)tasx_get_all_mask();
+    unsigned long long pMask =
+        (unsigned long long)tasx_get_pcore_mask();
+    unsigned long long eMask =
+        (unsigned long long)tasx_get_ecore_mask();
+
+    if (!all) {
+        LOGW("[TASX] CPU topology unavailable, scheduling profiles degraded");
         return;
     }
 
-    std::cout << "[TASX] CPU: " << g_physCores << " physical / " << g_logical
-              << " logical cores";
-    if (g_isHybrid)
-        std::cout << " | hybrid: " << MaskBits(g_pMask) << " P-cores, "
-                  << MaskBits(g_eMask) << " E-cores";
-    std::cout << std::endl;
-    std::cout << "[TASX] Focus profile -> all cores + HIGH priority; "
-                 "background -> " << (g_isHybrid ? "E-cores" : "low half")
-              << " + IDLE + efficiency mode" << std::endl;
+    unsigned logical = PopCount(all);
+    int hybrid = (eMask && eMask != all) ? 1 : 0;
+
+    if (hybrid)
+        LOGI("[TASX] CPU: %u logical cores | hybrid: %u P-cores, %u E-cores",
+             logical, PopCount(pMask), PopCount(eMask));
+    else
+        LOGI("[TASX] CPU: %u logical cores (non-hybrid, background -> low half)",
+             logical);
+    LOGI("[TASX] Focus profile -> all cores + HIGH priority; background -> %s + IDLE + efficiency mode",
+         hybrid ? "E-cores" : "low half");
 }
 
 } /* namespace */
 
 void CpuInit(void)
 {
-    InitTopology();
     LogSummary();
 }
 
-DWORD_PTR CpuAllMask(void)         { InitTopology(); return g_allMask; }
-int       CpuIsHybrid(void)        { InitTopology(); return g_isHybrid; }
-DWORD     CpuLogicalCount(void)    { InitTopology(); return g_logical; }
+DWORD_PTR CpuAllMask(void)
+{
+    return (DWORD_PTR)tasx_get_all_mask();
+}
+
+int CpuIsHybrid(void)
+{
+    unsigned long long eMask = (unsigned long long)tasx_get_ecore_mask();
+    unsigned long long all = (unsigned long long)tasx_get_all_mask();
+    return (eMask && eMask != all) ? 1 : 0;
+}
+
+DWORD CpuLogicalCount(void)
+{
+    return PopCount((unsigned long long)tasx_get_all_mask());
+}
 
 DWORD_PTR CpuBackgroundMask(void)
 {
-    InitTopology();
-    return (g_isHybrid && MaskBits(g_eMask) >= 2) ? g_eMask : g_lowHalfMask;
+    return (DWORD_PTR)tasx_get_ecore_mask(); /* alias: ntsys owns the mask */
 }
 
 void CpuSetBoostMode(int enable)
@@ -138,17 +92,14 @@ void CpuSetBoostMode(int enable)
     if (!hPowrProf) return;
 
     using PowerSetInformationFn = LONG (WINAPI*)(HANDLE, int, PVOID, ULONG);
-    auto fn = reinterpret_cast<PowerSetInformationFn>(
-        GetProcAddress(hPowrProf, "PowerSetInformation"));
+    auto fn = TasxProcFn<PowerSetInformationFn>(hPowrProf, "PowerSetInformation");
     if (fn) {
         DWORD boost = enable ? 1 : 0;
         if (fn(nullptr, 35 /* ProcessorPerformanceBoostMode */, &boost,
                sizeof(boost)) == 0)
-            std::cout << "[TASX] CPU boost mode "
-                      << (enable ? "enabled" : "disabled") << std::endl;
+            LOGI("[TASX] CPU boost mode %s", enable ? "enabled" : "disabled");
         else
-            std::cout << "[TASX] CPU boost mode change failed (needs admin)"
-                      << std::endl;
+            LOGW("[TASX] CPU boost mode change failed (needs admin)");
     }
     FreeLibrary(hPowrProf);
 }
@@ -157,7 +108,6 @@ bool CpuApplyFocusProfile(HANDLE hProcess, int focused)
 {
     if (!hProcess || hProcess == INVALID_HANDLE_VALUE) return false;
 
-    InitTopology();
     LogSummary();
 
     DWORD pid = GetProcessId(hProcess);
@@ -167,44 +117,37 @@ bool CpuApplyFocusProfile(HANDLE hProcess, int focused)
 
     if (focused) {
         if (!SetPriorityClass(hProcess, HIGH_PRIORITY_CLASS))
-            std::cout << "[TASX] PID " << pid
-                      << " HIGH priority failed | Code: " << GetLastError()
-                      << std::endl;
+            LOGW("[TASX] PID %lu HIGH priority failed | Code: %lu", pid,
+                 (unsigned long)GetLastError());
 
         DWORD_PTR target = pMask ? pMask : allMask;
-        if (!target) target = g_allMask;
         if (target && !SetProcessAffinityMask(hProcess, target))
-            std::cout << "[TASX] PID " << pid
-                      << " p-core affinity failed | Code: " << GetLastError()
-                      << std::endl;
+            LOGW("[TASX] PID %lu p-core affinity failed | Code: %lu", pid,
+                 (unsigned long)GetLastError());
 
         /* Exempt from EcoQoS / power throttling — the focused game gets
            the turbo it pays for (process-level only, no thread enumeration). */
         tasx_process_power_throttling(hProcess, 0);
         tasx_set_memory_priority(hProcess, 5 /* Normal */);
 
-        std::cout << "[TASX] PID " << pid
-                  << " -> FOCUSED profile (HIGH priority, p-cores, boost exempt)"
-                  << std::endl;
+        LOGI("[TASX] PID %lu -> FOCUSED profile (HIGH priority, p-cores, boost exempt)",
+             pid);
         return true;
     }
 
     if (!SetPriorityClass(hProcess, IDLE_PRIORITY_CLASS))
-        std::cout << "[TASX] PID " << pid
-                  << " IDLE priority failed | Code: " << GetLastError()
-                  << std::endl;
+        LOGW("[TASX] PID %lu IDLE priority failed | Code: %lu", pid,
+             (unsigned long)GetLastError());
 
     if (config_get_bool("TASX", "PinBackgroundToECores", 1)) {
-        DWORD_PTR bgMask = eMask ? eMask : g_lowHalfMask;
-        if (!bgMask) bgMask = g_lowHalfMask;
+        DWORD_PTR bgMask = eMask ? eMask : allMask;
         if (bgMask) {
             if (SetProcessAffinityMask(hProcess, bgMask))
-                std::cout << "[TASX] PID " << pid << " pinned to "
-                          << MaskBits(bgMask) << " background (E-)cores" << std::endl;
+                LOGI("[TASX] PID %lu pinned to %u background (E-)cores", pid,
+                     PopCount((unsigned long long)bgMask));
             else
-                std::cout << "[TASX] PID " << pid
-                          << " affinity failed | Code: " << GetLastError()
-                          << std::endl;
+                LOGW("[TASX] PID %lu affinity failed | Code: %lu", pid,
+                     (unsigned long)GetLastError());
         }
     }
 
@@ -214,8 +157,7 @@ bool CpuApplyFocusProfile(HANDLE hProcess, int focused)
     tasx_set_io_priority(hProcess, 0 /* VeryLow */);
     tasx_set_memory_priority(hProcess, 1 /* VeryLow */);
 
-    std::cout << "[TASX] PID " << pid
-              << " -> BACKGROUND profile (IDLE, EcoQoS, E-cores, low I/O+mem)"
-              << std::endl;
+    LOGI("[TASX] PID %lu -> BACKGROUND profile (IDLE, EcoQoS, E-cores, low I/O+mem)",
+         pid);
     return true;
 }

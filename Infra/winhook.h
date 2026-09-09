@@ -1,11 +1,13 @@
 #pragma once
 
 #include <windows.h>
-#include <atomic>
 
 /* Event-driven foreground watcher. WINEVENT_OUTOFCONTEXT callbacks are only
    delivered to a thread pumping messages, so Start() owns a dedicated pump
-   thread. A 250 ms poll in the main loop acts as the safety net. */
+   thread. A 250 ms poll in the main loop acts as the safety net.
+   Focus state is read by the main loop via GetForegroundWindow — this
+   class only delivers change notifications (single mechanism, no cached
+   PID that could desync). */
 class WinHook {
 public:
     WinHook() = default;
@@ -13,9 +15,6 @@ public:
 
     /* Sets the hook and starts the pump thread. */
     void Start();
-
-    /* Last foreground window PID seen by the hook (0 = unknown). */
-    static DWORD ForegroundPid();
 
     /* Implemented in master.cpp: enqueues a FOCUS event for the main loop. */
     static void NotifyFocusChanged();
@@ -27,7 +26,6 @@ private:
     static void CALLBACK HookCallback(HWINEVENTHOOK hook, DWORD event, HWND hwnd,
         LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime);
 
-    static std::atomic<DWORD> s_foregroundPid;
     HWINEVENTHOOK m_hook = nullptr;
     HANDLE m_pumpThread = nullptr;
     DWORD m_pumpThreadId = 0;

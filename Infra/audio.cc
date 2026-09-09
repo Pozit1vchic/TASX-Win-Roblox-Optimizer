@@ -1,11 +1,11 @@
 #include "audio.h"
 
 #include "config.h"
+#include "log.h"
 
 #include <audiopolicy.h>
 #include <mmdeviceapi.h>
 
-#include <iostream>
 #include <unordered_set>
 
 namespace {
@@ -87,7 +87,7 @@ void AudioMuteByPid(DWORD pid)
     if (!pid) return;
     if (!config_get_bool("TASX", "MuteBackground", 1)) return;
     if (SetMuteForPid(pid, TRUE))
-        std::cout << "[Audio] Background client PID " << pid << " muted" << std::endl;
+        LOGI("[Audio] Background client PID %lu muted", pid);
 }
 
 void AudioUnmuteByPid(DWORD pid)
@@ -96,7 +96,7 @@ void AudioUnmuteByPid(DWORD pid)
     if (!config_get_bool("TASX", "MuteBackground", 1)) return;
     // Unmute even if MuteBackground was toggled off? We always unmute on focus.
     if (SetMuteForPid(pid, FALSE))
-        std::cout << "[Audio] Client PID " << pid << " unmuted" << std::endl;
+        LOGI("[Audio] Client PID %lu unmuted", pid);
 }
 
 void AudioApplyBackgroundMute(const std::unordered_set<DWORD>& clientPids,
@@ -112,7 +112,6 @@ void AudioApplyBackgroundMute(const std::unordered_set<DWORD>& clientPids,
     int count = 0;
     se->GetCount(&count);
 
-    std::unordered_set<DWORD> seen;
     for (int i = 0; i < count; ++i)
     {
         IAudioSessionControl* ctl = nullptr;
@@ -127,7 +126,6 @@ void AudioApplyBackgroundMute(const std::unordered_set<DWORD>& clientPids,
 
             if (pid && clientPids.count(pid))
             {
-                seen.insert(pid);
                 bool wantMuted = focusedPid != 0 && pid != focusedPid;
 
                 ISimpleAudioVolume* vol = nullptr;
@@ -139,13 +137,11 @@ void AudioApplyBackgroundMute(const std::unordered_set<DWORD>& clientPids,
 
                     if (wantMuted && !mutedNow) {
                         if (SUCCEEDED(vol->SetMute(TRUE, nullptr)))
-                            std::cout << "[Audio] Background client PID " << pid
-                                      << " muted" << std::endl;
+                            LOGI("[Audio] Background client PID %lu muted", pid);
                     }
                     else if (!wantMuted && mutedNow) {
                         vol->SetMute(FALSE, nullptr);
-                        std::cout << "[Audio] Client PID " << pid
-                                  << " unmuted" << std::endl;
+                        LOGI("[Audio] Client PID %lu unmuted", pid);
                     }
                     vol->Release();
                 }

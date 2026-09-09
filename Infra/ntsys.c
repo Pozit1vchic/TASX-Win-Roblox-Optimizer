@@ -5,6 +5,11 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+/* Forward: sync logger defined at the bottom of this file
+   (full prototype lives in ntsys.h). */
+void tasx_log(int level, const char* fmt, ...);
 
 typedef long NTSTATUS;
 
@@ -174,7 +179,8 @@ int tasx_set_timer_resolution(unsigned long unitsOf100ns, int enable,
         static int warned = 0;
         if (!warned) {
             warned = 1;
-            fprintf(stderr, "[TASX] NtSetTimerResolution privilege not held, timer resolution unchanged\n");
+            tasx_log(TASX_LOG_WARN,
+                "[TASX] NtSetTimerResolution privilege not held, timer resolution unchanged");
         }
         return 0;
     }
@@ -269,6 +275,7 @@ static int enable_privilege(const wchar_t* name)
         tp.PrivilegeCount = 1;
         tp.Privileges[0].Luid = luid;
         tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+        SetLastError(0); /* AdjustTokenPrivileges does not clear it on success */
         if (AdjustTokenPrivileges(token, FALSE, &tp, sizeof(tp), NULL, NULL)) {
             ok = (GetLastError() != ERROR_NOT_ALL_ASSIGNED);
         }
@@ -323,30 +330,161 @@ int tasx_is_elevated(void)
     return elevated;
 }
 
+/* --- Sync file + stdout logging -------------------------------------- */
+
+#include <stdarg.h>
+
+#define TASX_LOG_MAX_LINE 4096
+#define TASX_LOG_ROTATE_BYTES (1024u * 1024u)
+
+static CRITICAL_SECTION g_logCs;
+static int g_logReady = 0;
+static FILE* g_logFile = NULL;
+static char g_logPath[MAX_PATH] = { 0 };
+static int g_logLevel = TASX_LOG_INFO;
+static unsigned long long g_logBytes = 0;
+
+void tasx_log_init(void)
+{
+    if (g_logReady) return;
+    InitializeCriticalSection(&g_logCs);
+    g_logReady = 1;
+}
+
+void tasx_log_configure(const char* logFilePath, int minLevel)
+{
+    if (!g_logReady) tasx_log_init();
+    EnterCriticalSection(&g_logCs);
+    g_logLevel = (minLevel < TASX_LOG_INFO || minLevel > TASX_LOG_ERROR)
+        ? TASX_LOG_INFO : minLevel;
+    if (g_logFile) { fclose(g_logFile); g_logFile = NULL; }
+    g_logPath[0] = '\0';
+    g_logBytes = 0;
+    if (logFilePath && logFilePath[0]) {
+        snprintf(g_logPath, sizeof(g_logPath), "%s", logFilePath);
+        g_logFile = fopen(g_logPath, "a");
+        if (g_logFile) {
+            fseek(g_logFile, 0, SEEK_END);
+            {
+                long pos = ftell(g_logFile);
+                g_logBytes = (pos > 0) ? (unsigned long long)pos : 0ull;
+            }
+        }
+    }
+    LeaveCriticalSection(&g_logCs);
+}
+
+int tasx_log_level_from_str(const char* s)
+{
+    if (!s || !s[0]) return TASX_LOG_INFO;
+    switch (s[0] | 0x20) { /* ASCII lowercase */
+    case 'w': return TASX_LOG_WARN;
+    case 'e': return TASX_LOG_ERROR;
+    default:  return TASX_LOG_INFO;
+    }
+}
+
+static void tasx_log_rotate_locked(void)
+{
+    char oldPath[MAX_PATH + 8];
+
+    if (!g_logFile || g_logBytes <= TASX_LOG_ROTATE_BYTES) return;
+    fclose(g_logFile);
+    g_logFile = NULL;
+    snprintf(oldPath, sizeof(oldPath), "%s.old", g_logPath);
+    DeleteFileA(oldPath);
+    MoveFileA(g_logPath, oldPath); /* best effort: continue even if it fails */
+    g_logFile = fopen(g_logPath, "w");
+    g_logBytes = 0;
+}
+
+void tasx_log(int level, const char* fmt, ...)
+{
+    char line[TASX_LOG_MAX_LINE];
+    SYSTEMTIME st;
+    int prefix;
+    va_list ap;
+    size_t len;
+
+    if (!fmt || !fmt[0]) return;
+    if (!g_logReady) {
+        /* Pre-init fallback: stdout only, no lock (single-threaded startup). */
+        va_start(ap, fmt);
+        vprintf(fmt, ap);
+        va_end(ap);
+        putchar('\n');
+        return;
+    }
+
+    GetLocalTime(&st);
+    prefix = snprintf(line, sizeof(line), "[%02u:%02u:%02u] ",
+                      (unsigned)st.wHour, (unsigned)st.wMinute, (unsigned)st.wSecond);
+    if (prefix < 0) prefix = 0;
+    if ((size_t)prefix >= sizeof(line) - 2) prefix = (int)sizeof(line) - 2;
+
+    va_start(ap, fmt);
+    vsnprintf(line + prefix, sizeof(line) - (size_t)prefix, fmt, ap);
+    va_end(ap);
+    line[sizeof(line) - 1] = '\0';
+
+    EnterCriticalSection(&g_logCs);
+    if (level >= g_logLevel) {
+        fputs(line, stdout);
+        putchar('\n');
+        fflush(stdout);
+        if (g_logFile) {
+            len = strlen(line);
+            fwrite(line, 1, len, g_logFile);
+            fwrite("\n", 1, 1, g_logFile);
+            fflush(g_logFile);
+            g_logBytes += (unsigned long long)(len + 1);
+            tasx_log_rotate_locked();
+        }
+    }
+    LeaveCriticalSection(&g_logCs);
+}
+
+void tasx_log_shutdown(void)
+{
+    if (!g_logReady) return;
+    EnterCriticalSection(&g_logCs);
+    if (g_logFile) { fclose(g_logFile); g_logFile = NULL; }
+    g_logPath[0] = '\0';
+    g_logBytes = 0;
+    LeaveCriticalSection(&g_logCs);
+    DeleteCriticalSection(&g_logCs);
+    g_logReady = 0;
+}
+
 /* --- Job Objects ----------------------------------------------------- */
 
-HANDLE tasx_job_create(void)
+HANDLE tasx_job_create_ex(int killOnClose)
 {
     HANDLE job = CreateJobObjectW(NULL, NULL);
     if (!job) return NULL;
 
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION ext;
-    ZeroMemory(&ext, sizeof(ext));
-    ext.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    /* KILL_ON_CLOSE ensures farm processes die with TASX only if TASX
-       is the job owner and configured. Applied here as per spec;
-       per-process jobs previously didn't set it, now grouped jobs do. */
-    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation,
-                                 &ext, sizeof(ext))) {
-        /* Some systems restrict KILL_ON_CLOSE without admin; try without */
+    if (killOnClose) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION ext;
         ZeroMemory(&ext, sizeof(ext));
+        ext.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation,
                                      &ext, sizeof(ext))) {
-            CloseHandle(job);
-            return NULL;
+            /* Some systems restrict KILL_ON_CLOSE without admin; fall back
+               to a plain job instead of failing. */
+            ZeroMemory(&ext, sizeof(ext));
+            if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation,
+                                         &ext, sizeof(ext))) {
+                CloseHandle(job);
+                return NULL;
+            }
         }
     }
     return job;
+}
+
+HANDLE tasx_job_create(void)
+{
+    return tasx_job_create_ex(1);
 }
 
 int tasx_job_assign(HANDLE hJob, HANDLE hProcess)
@@ -385,7 +523,7 @@ int tasx_job_set_io_priority(HANDLE hJob, unsigned long level)
 
 static int g_topoInited = 0;
 static unsigned long long g_pMask = 0;
-static unsigned long long g_eMask = 0;
+static unsigned long long g_eMask = 0; /* background mask, see init_topo */
 static unsigned long long g_allMask = 0;
 
 static unsigned popcnt64(unsigned long long m)
@@ -417,7 +555,6 @@ static void init_topo(void)
     unsigned char* end = buf + len;
     int isHybrid = 0;
     unsigned long long pMask = 0, eMask = 0, allMask = 0;
-    unsigned long phys = 0;
 
     while (ptr < end) {
         PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX core =
@@ -433,16 +570,17 @@ static void init_topo(void)
             } else if (core->Processor.GroupMask[0].Group == 0) {
                 eMask |= mask;
             }
-            phys++;
         }
         ptr += core->Size;
     }
     free(buf);
 
     if (!isHybrid) pMask = allMask;
-    /* Ensure eMask has at least 2 bits, otherwise fallback to low half */
-    if (isHybrid && popcnt64(eMask) < 2) {
-        /* Compute low half manually */
+    /* eMask semantic = background mask (single source of truth for CPU.cc
+       and jobs.cc). Hybrid with >= 2 E-cores: E-cores. Otherwise
+       (non-hybrid, or degenerate hybrid with < 2 E-bits): low half of the
+       logical CPUs, so background clients never sit on every core. */
+    if (!isHybrid || popcnt64(eMask) < 2) {
         unsigned total = popcnt64(allMask);
         unsigned half = total >= 2 ? total / 2 : total;
         unsigned long long low = 0;
@@ -535,21 +673,31 @@ int tasx_etw_disable_provider(const wchar_t* providerName)
     if (!adv) adv = LoadLibraryW(L"advapi32.dll");
     if (!adv) return 0;
 
-    ControlTraceWFn pControlTraceW = (ControlTraceWFn)GetProcAddress(adv, "ControlTraceW");
-    EnableTraceEx2Fn pEnableTraceEx2 = (EnableTraceEx2Fn)GetProcAddress(adv, "EnableTraceEx2");
+    ControlTraceWFn pControlTraceW = NULL;
+    EnableTraceEx2Fn pEnableTraceEx2 = NULL;
+    {
+        /* void* round-trip: direct FARPROC->function casts trip -Wextra. */
+        void* p1 = (void*)GetProcAddress(adv, "ControlTraceW");
+        void* p2 = (void*)GetProcAddress(adv, "EnableTraceEx2");
+        if (p1) memcpy(&pControlTraceW, &p1, sizeof(pControlTraceW));
+        if (p2) memcpy(&pEnableTraceEx2, &p2, sizeof(pEnableTraceEx2));
+    }
     if (!pControlTraceW || !pEnableTraceEx2) return 0;
 
-    /* Known provider GUIDs (hardcoded to avoid runtime lookup) */
-    GUID guid = {0};
+    /* Known provider GUIDs (verified against Microsoft instrumentation
+       manifests and the winevt-kb provider database):
+       - Microsoft-Windows-Diagnostics-Performance:
+         {CFC18EC0-96B1-4EBA-961B-622CAEE05B0A} (diagperf.dll)
+       - Microsoft-Windows-Kernel-Processor-Power:
+         {0F67E49F-FE51-4E9F-B490-6F2948CC6027} (PPM_ETW_PROVIDER) */
+    GUID guid;
+    ZeroMemory(&guid, sizeof(guid));
     int haveGuid = 0;
     if (wcscmp(providerName, L"Microsoft-Windows-Diagnostics-Performance") == 0) {
-        /* {C4CDEFD2-CDB6-419A-9B58-DB107152125D} -> actually Diagnostics-Performance = {CFC18EC0-96B1-4EBA-961B-622CAEE05B0A} check: use known */
-        /* Diagnostics-Performance GUID: {3356104E-A32F-4E05-B9CE-F24A1A58B3FF} — but we map both */
-        /* Use the two requested: */
         static const GUID g_diag = {0xcfc18ec0, 0x96b1, 0x4eba, {0x96,0x1b,0x62,0x2c,0xae,0xe0,0x5b,0x0a}};
         guid = g_diag; haveGuid = 1;
     } else if (wcscmp(providerName, L"Microsoft-Windows-Kernel-Processor-Power") == 0) {
-        static const GUID g_pwr = {0x0f67e49f, 0xfe51, 0x4e2f, {0xb1,0xa5,0xc5,0x8f,0xba,0xa5,0xbb,0x81}};
+        static const GUID g_pwr = {0x0f67e49f, 0xfe51, 0x4e9f, {0xb4,0x90,0x6f,0x29,0x48,0xcc,0x60,0x27}};
         guid = g_pwr; haveGuid = 1;
     } else {
         /* Try to enable/disable by name via ControlTrace — not supported, fail */
@@ -590,38 +738,6 @@ TASX_SYS_PROC* tasx_query_system_processes(void)
 
         free(buf);
         size = needed > size ? needed + (1ul << 20) : size + (1ul << 20);
-    }
-    return NULL;
-}
-
-TASX_SYS_PROC_PERF* tasx_query_processor_performance(unsigned long* outCount)
-{
-    static NtQuerySystemInformationFn fn = NULL;
-    static int resolved = 0;
-
-    if (outCount) *outCount = 0;
-    if (!resolved) {
-        fn = (NtQuerySystemInformationFn)nt_fn("NtQuerySystemInformation");
-        resolved = 1;
-    }
-    if (!fn) return NULL;
-
-    unsigned long size = 4096;
-    for (int attempt = 0; attempt < 4; ++attempt) {
-        unsigned char* buf = (unsigned char*)malloc(size);
-        if (!buf) return NULL;
-
-        unsigned long needed = 0;
-        NTSTATUS s = fn(8 /* SystemProcessorPerformanceInformation */,
-                        buf, size, &needed);
-        if (TASX_NT_SUCCESS(s)) {
-            if (outCount && needed >= sizeof(TASX_SYS_PROC_PERF))
-                *outCount = needed / sizeof(TASX_SYS_PROC_PERF);
-            return (TASX_SYS_PROC_PERF*)buf;
-        }
-
-        free(buf);
-        size = needed > size ? needed : size * 2;
     }
     return NULL;
 }

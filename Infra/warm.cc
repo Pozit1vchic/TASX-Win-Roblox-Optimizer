@@ -1,10 +1,10 @@
 #include "warm.h"
 
 #include "config.h"
+#include "log.h"
 #include "lograte.h"
 
 #include <algorithm>
-#include <iostream>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -33,8 +33,7 @@ PrefetchVirtualMemoryFn GetPrefetchFn()
     if (!resolved) {
         HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
         if (k32)
-            fn = (PrefetchVirtualMemoryFn)GetProcAddress(k32,
-                                                         "PrefetchVirtualMemory");
+            fn = TasxProcFn<PrefetchVirtualMemoryFn>(k32, "PrefetchVirtualMemory");
         resolved = 1;
     }
     return fn; /* null on Win7 -> caller falls back to sequential reads */
@@ -100,7 +99,7 @@ int FilePriority(const wchar_t* name)
 void WarmClientFilesAsync(DWORD pid)
 {
     if (!config_get_bool("TASX", "WarmClientFiles", 1)) return;
-    if (!config_get_bool("TASX", "WarmOncePerVersion", 1)) return; // already default
+    /* Once-per-version is inherent (g_primedPaths); no config key. */
 
     // Cache primed paths globally — only prime once per version directory
     std::thread([pid]() {
@@ -164,9 +163,11 @@ void WarmClientFilesAsync(DWORD pid)
 
         if (warmed) {
             if (LogRateLimit("warm-primed", 10)) {
-                std::cout << "[Warm] Shared pages primed (once): " << (warmed >> 20)
-                          << " MB from " << std::string(dir.begin(), dir.end())
-                          << std::endl;
+                char narrow[MAX_PATH];
+                size_t conv = 0;
+                wcstombs_s(&conv, narrow, sizeof(narrow), dir.c_str(), _TRUNCATE);
+                LOGI("[Warm] Shared pages primed (once): %llu MB from %s",
+                     warmed >> 20, narrow);
             }
         }
         else {

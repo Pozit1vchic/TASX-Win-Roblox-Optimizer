@@ -12,7 +12,6 @@
 #include <windows.h>
 #include <psapi.h>
 #include <tlhelp32.h>
-#include <iostream>
 #include <string>
 
 #include "WMI.h"
@@ -30,6 +29,7 @@
 #include "desktop.h"
 #include "netcache.h"
 
+#include "log.h"
 #include "lograte.h"
 
 #include <unordered_set>
@@ -42,7 +42,7 @@
 
 namespace {
 
-enum class Ev { RobloxCreated, RobloxExited, ChildSpawn, Focus, LowMem };
+enum class Ev { RobloxCreated, RobloxExited, JobChild, Focus, LowMem, ConfigChanged };
 
 struct Event {
     Ev    kind;
@@ -84,7 +84,7 @@ void TasxNotifyProcess(unsigned long pid, int created)
 
 void TasxNotifyJobEvent(int kind, DWORD pid)
 {
-    PushEvent({kind == 1 ? Ev::RobloxExited : Ev::ChildSpawn, pid});
+    PushEvent({kind == 1 ? Ev::RobloxExited : Ev::JobChild, pid});
 }
 
 void WinHook::NotifyFocusChanged()
@@ -100,13 +100,39 @@ namespace {
 
 std::unordered_map<DWORD, HANDLE> g_rbxHandles;
 std::unordered_map<DWORD, HANDLE> g_waitHandles; // RegisterWait handles
+/* Commit-blocked spawns: pid -> next retry time (ms). The WMI creation
+   event is already consumed when the block hits, so without this queue
+   the client would be dropped forever. Retried on the main loop (no new
+   threads); dropped silently if the process exits first. */
+std::unordered_map<DWORD, ULONGLONG> g_retryBlocked;
 DWORD g_appliedFocus = 0; /* PID currently running the focused profile */
 WinHook* g_hook = nullptr;
 HANDLE g_singleInstanceMutex = nullptr;
 bool g_wmiOk = false;
 
+char g_iniPath[MAX_PATH] = {};
+ULONGLONG g_iniMtime = 0;
+volatile LONG g_stop = 0;
+
 ULONGLONG g_lastWsUpdateMs = 0;
 ULONGLONG g_lastCrashSweepMs = 0;
+ULONGLONG g_lastRetryMs = 0;
+ULONGLONG g_lastIniCheckMs = 0;
+
+/* Forward: defined below, used by RetryBlockedHooks. */
+void ApplyFocusIfChanged();
+void TimerOn();
+
+BOOL WINAPI CtrlHandler(DWORD type)
+{
+    if (type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT ||
+        type == CTRL_CLOSE_EVENT || type == CTRL_LOGOFF_EVENT ||
+        type == CTRL_SHUTDOWN_EVENT) {
+        InterlockedExchange(&g_stop, 1);
+        return TRUE;
+    }
+    return FALSE;
+}
 
 bool NameContains(const std::wstring& full, const wchar_t* needle)
 {
@@ -130,18 +156,13 @@ std::unordered_set<DWORD> ClientPidSet()
     return pids;
 }
 
-std::wstring QueryProcessName(DWORD pid)
+ULONGLONG IniMtimeKey()
 {
-    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (!h) return L"";
-
-    wchar_t path[MAX_PATH] = {};
-    DWORD size = MAX_PATH;
-    std::wstring name;
-    if (QueryFullProcessImageNameW(h, 0, path, &size))
-        name = path;
-    CloseHandle(h);
-    return name;
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (!GetFileAttributesExA(g_iniPath, GetFileExInfoStandard, &fad))
+        return 0;
+    return ((ULONGLONG)fad.ftLastWriteTime.dwLowDateTime) |
+           ((ULONGLONG)fad.ftLastWriteTime.dwHighDateTime << 32);
 }
 
 VOID CALLBACK OnProcessExit(PVOID lpParam, BOOLEAN)
@@ -180,14 +201,15 @@ void HookClient(DWORD pid)
 {
     if (g_rbxHandles.count(pid)) return;
 
-    // Commit charge guard: block new spawns if > threshold
+    // Commit charge guard: defer (not drop) new spawns past the threshold.
     int blockPct = config_get_int("TASX", "CommitBlockThreshold", 85);
     if (blockPct <= 0) blockPct = 85;
-    // also support legacy CommitBlockThreshold naming? Use same.
     int curPct = tasx_get_commit_percent();
     if (curPct >= 0 && curPct >= blockPct) {
-        std::cout << "[TASX] Commit charge " << curPct << "%, spawn blocked (threshold "
-                  << blockPct << "%) PID " << pid << std::endl;
+        if (!g_retryBlocked.count(pid) && LogRateLimit("commit-block", 60))
+            LOGW("[TASX] Commit charge %d%%, spawn of PID %lu deferred (threshold %d%%) — retry in ~5s",
+                 curPct, pid, blockPct);
+        g_retryBlocked[pid] = GetTickCount64() + 5000;
         return;
     }
 
@@ -196,7 +218,7 @@ void HookClient(DWORD pid)
         PROCESS_SET_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE,
         FALSE, pid);
     if (!hProc) {
-        std::cout << "[TASX] Failed to open PID " << pid << std::endl;
+        LOGW("[TASX] Failed to open PID %lu", pid);
         return;
     }
 
@@ -210,13 +232,11 @@ void HookClient(DWORD pid)
         tasx_process_power_throttling(hProc, 1);
         tasx_set_io_priority(hProc, 0);
         tasx_set_memory_priority(hProc, 1);
-        std::cout << "[TASX] New Roblox instance PID " << pid
-                  << " hooked (job-tracked)" << std::endl;
+        LOGI("[TASX] New Roblox instance PID %lu hooked (job-tracked)", pid);
     }
     else {
         CpuApplyFocusProfile(hProc, 0);
-        std::cout << "[TASX] New Roblox instance PID " << pid
-                  << " hooked (per-process fallback)" << std::endl;
+        LOGI("[TASX] New Roblox instance PID %lu hooked (per-process fallback)", pid);
     }
 
     StartTrimmer(pid, hProc);
@@ -224,13 +244,59 @@ void HookClient(DWORD pid)
     WarmClientFilesAsync(pid);
 }
 
+/* Retry commit-deferred spawns (~5s cadence, on the existing main loop).
+   A retried client gets the FULL hook once commit drops below the
+   threshold; PIDs that exited meanwhile are dropped silently. */
+void RetryBlockedHooks()
+{
+    ULONGLONG now = GetTickCount64();
+    if (now - g_lastRetryMs < 5000 || g_retryBlocked.empty())
+        return;
+    g_lastRetryMs = now;
+
+    int blockPct = config_get_int("TASX", "CommitBlockThreshold", 85);
+    if (blockPct <= 0) blockPct = 85;
+    int curPct = tasx_get_commit_percent();
+
+    std::vector<DWORD> due;
+    due.reserve(g_retryBlocked.size());
+    for (auto& kv : g_retryBlocked) {
+        if (now >= kv.second)
+            due.push_back(kv.first);
+    }
+    for (DWORD pid : due) {
+        g_retryBlocked.erase(pid);
+        if (g_rbxHandles.count(pid))
+            continue;
+        HANDLE probe = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (!probe)
+            continue; /* exited while deferred — silent drop */
+        CloseHandle(probe);
+        if (curPct >= 0 && curPct >= blockPct) {
+            g_retryBlocked[pid] = now + 5000; /* still choking, stay queued */
+            continue;
+        }
+        bool wasEmpty = g_rbxHandles.empty();
+        HookClient(pid);
+        if (g_rbxHandles.count(pid)) {
+            ApplyFocusIfChanged();
+            if (wasEmpty) {
+                TweaksPowerEnter();
+                TimerOn();
+            }
+        }
+    }
+}
+
 void ReleaseClient(DWORD pid, bool logExit)
 {
+    g_retryBlocked.erase(pid); /* deferred spawn that never hooked: silent */
+
     auto it = g_rbxHandles.find(pid);
     if (it == g_rbxHandles.end()) return;
 
     if (logExit)
-        std::cout << "[TASX] Roblox PID " << pid << " exited." << std::endl;
+        LOGI("[TASX] Roblox PID %lu exited.", pid);
 
     UnregisterProcessWait(pid);
     StopTrimmer(pid);
@@ -242,21 +308,21 @@ void ReleaseClient(DWORD pid, bool logExit)
     if (g_appliedFocus == pid) {
         g_appliedFocus = 0;
         TrimmerSetFocused(0);
-        // BUG 14: the PID is dead - its WASAPI sessions are already gone.
-        // No audio API call; just drop our focus/mute bookkeeping (above).
+        // The PID is dead — its WASAPI sessions are already gone.
+        // No audio API call; just drop focus/mute bookkeeping (above).
     }
 }
 
 void KillCrashHandlerPid(DWORD pid)
 {
-    std::wstring name = QueryProcessName(pid);
+    std::wstring name = QueryProcessNameByPid(pid);
     if (!NameContains(name, L"robloxcrashhandler.exe")) return;
 
     HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
     if (h) {
         TerminateProcess(h, 0);
         CloseHandle(h);
-        std::cout << "[TASX] Killed RobloxCrashHandler PID " << pid << std::endl;
+        LOGI("[TASX] Killed RobloxCrashHandler PID %lu", pid);
     }
 }
 
@@ -285,6 +351,7 @@ void SweepDiscoverViaSnapshot()
             if (!IsRobloxName(name)) continue;
             DWORD pid = pe.th32ProcessID;
             if (g_rbxHandles.count(pid)) continue;
+            if (g_retryBlocked.count(pid)) continue; // owned by the retry queue
             // commit guard inside HookClient
             HookClient(pid);
         } while (Process32NextW(snap, &pe));
@@ -307,6 +374,7 @@ void SweepDiscover()
     for (const auto& s : stats) {
         if (!s.name.size() || !IsRobloxName(s.name)) continue;
         if (g_rbxHandles.count(s.pid)) continue;
+        if (g_retryBlocked.count(s.pid)) continue;
         HookClient(s.pid);
     }
 }
@@ -330,8 +398,8 @@ void ApplyFocusIfChanged()
     if (hwnd) GetWindowThreadProcessId(hwnd, &pid);
 
     bool isRoblox = pid != 0 && g_rbxHandles.count(pid) != 0;
-    // BUG 5/13: configurable hysteresis, bypassed so the FIRST focus
-    // detection after startup (or when nothing was focused yet) is instant.
+    // Configurable hysteresis, bypassed so the FIRST focus detection
+    // after startup (or when nothing was focused yet) is instant.
     static ULONGLONG lastFocusCheckMs = 0;
     ULONGLONG now = GetTickCount64();
     int hysteresisMs = config_get_int("TASX", "FocusHysteresisMs", 500);
@@ -347,23 +415,18 @@ void ApplyFocusIfChanged()
         if (oldFocus) {
             auto old = g_rbxHandles.find(oldFocus);
             if (old != g_rbxHandles.end()) {
-                std::cout << "[TASX] Roblox PID " << oldFocus
-                          << " lost focus" << std::endl;
+                LOGI("[TASX] Roblox PID %lu lost focus", oldFocus);
                 if (!JobApplyProfile(oldFocus, 0))
                     CpuApplyFocusProfile(old->second, 0);
-                else
-                    tasx_process_power_throttling(old->second, 1);
                 AudioMuteByPid(oldFocus);
             }
         }
 
-        std::cout << "[TASX] Roblox PID " << pid << " in focus" << std::endl;
+        LOGI("[TASX] Roblox PID %lu in focus", pid);
         auto cur = g_rbxHandles.find(pid);
         if (cur != g_rbxHandles.end()) {
             if (!JobApplyProfile(pid, 1))
                 CpuApplyFocusProfile(cur->second, 1);
-            else
-                tasx_process_power_throttling(cur->second, 0);
         }
         AudioUnmuteByPid(pid);
         TrimmerSetFocused(pid);
@@ -377,20 +440,16 @@ void ApplyFocusIfChanged()
         DWORD oldFocus = g_appliedFocus;
         auto old = g_rbxHandles.find(oldFocus);
         if (old != g_rbxHandles.end()) {
-            std::cout << "[TASX] Roblox PID " << oldFocus
-                      << " lost focus (other app)" << std::endl;
+            LOGI("[TASX] Roblox PID %lu lost focus (other app)", oldFocus);
             if (!JobApplyProfile(oldFocus, 0))
                 CpuApplyFocusProfile(old->second, 0);
-            else
-                tasx_process_power_throttling(old->second, 1);
             AudioMuteByPid(oldFocus);
         }
-        // Ensure focused pid itself is unmuted if it was muted before (should already)
         TrimmerSetFocused(0);
         g_appliedFocus = 0;
     }
 
-    // BUG 5: rewrite the dynamic job profile only when the focus STATE
+    // Rewrite the dynamic job profile only when the focus STATE
     // (focused / not focused) actually changed, not on every 250 ms tick.
     static int lastAppliedFocusState = -1;
     int currentState = (g_appliedFocus != 0) ? 1 : 0;
@@ -412,8 +471,7 @@ void TimerOn()
     if (config_get_bool("TASX", "TimerResolution", 1) &&
         tasx_set_timer_resolution(5000, 1, &actual)) {
         g_timerActive = true;
-        std::cout << "[TASX] Timer resolution set to "
-                  << (actual / 10) << " us" << std::endl;
+        LOGI("[TASX] Timer resolution set to %lu us", actual / 10);
     }
 }
 
@@ -424,7 +482,7 @@ void TimerOff()
 
     unsigned long actual = 0;
     tasx_set_timer_resolution(5000, 0, &actual);
-    std::cout << "[TASX] Timer resolution released" << std::endl;
+    LOGI("[TASX] Timer resolution released");
 }
 
 /* Full-system memory pass: standby purge + empty every working set. Needs
@@ -435,21 +493,9 @@ void SystemCleanPass(bool announce)
     if (!config_get_bool("TASX", "SystemCleaner", 1)) return;
     if (!tasx_is_elevated()) return;
 
-    static bool warned = false;
-
-    bool purged = tasx_purge_standby_list();
-    bool emptied = tasx_empty_working_sets_system();
-
-    if (purged && emptied) {
+    if (tasx_purge_standby_list() && tasx_empty_working_sets_system()) {
         if (announce)
-            std::cout << "[TASX] System clean: standby purged + all working sets emptied"
-                      << std::endl;
-    }
-    else if (!warned) {
-        warned = true;
-        std::cout << "[TASX] System cleaner needs admin rights "
-                     "(install via ScheduledTaskInstaller.bat for full effect)"
-                  << std::endl;
+            LOGI("[TASX] System clean: standby purged + all working sets emptied");
     }
 }
 
@@ -461,15 +507,18 @@ void LowMemReactorStart()
     HANDLE hThread = CreateThread(nullptr, 0, [](LPVOID)->DWORD {
         HANDLE hLow = CreateMemoryResourceNotification(LowMemoryResourceNotification);
         if (!hLow) {
-            std::cout << "[TASX] Low-memory notification unavailable" << std::endl;
+            LOGW("[TASX] Low-memory notification unavailable");
             return 0;
         }
-        // BUG 3: the notification is manual-reset and stays signaled while
-        // memory is low - without a debounce this floods the event queue.
+        // The notification is manual-reset and stays signaled while memory
+        // is low — debounce so the event queue is not flooded.
         while (true) {
             if (WaitForSingleObject(hLow, INFINITE) != WAIT_OBJECT_0) break;
             PushEvent({Ev::LowMem, 0});
-            Sleep(30000);  // debounce: after signaling, sleep 30s before next push
+            int cd = config_get_int("TASX", "LowMemCooldownSec", 30);
+            if (cd < 5) cd = 5;
+            if (cd > 300) cd = 300;
+            Sleep((DWORD)cd * 1000);
         }
         CloseHandle(hLow);
         return 0;
@@ -477,25 +526,51 @@ void LowMemReactorStart()
     if (hThread) CloseHandle(hThread);
 }
 
+void CheckIniReload()
+{
+    ULONGLONG now = GetTickCount64();
+    if (now - g_lastIniCheckMs < 10000)
+        return;
+    g_lastIniCheckMs = now;
+    ULONGLONG mtime = IniMtimeKey();
+    if (mtime && mtime != g_iniMtime)
+        PushEvent({Ev::ConfigChanged, 0});
+}
+
+void HandleConfigChanged()
+{
+    g_iniMtime = IniMtimeKey();
+    config_reload(g_iniPath);
+    tasx_log_configure(config_get_str("Log", "LogFile", ""),
+                       tasx_log_level_from_str(config_get_str("Log", "LogLevel", "info")));
+    LOGI("[TASX] Config reloaded: %s", g_iniPath);
+    /* Idempotent re-applies; trimmer thresholds are picked up lazily by
+       IntervalMs()/BelowSkipThresholdCached on the next deadline. */
+    FFlagsApply();
+    TweaksApplyOneShot();
+    JobsRefreshDynamic(g_appliedFocus != 0);
+}
+
 void HandleRobloxCreated(DWORD pid)
 {
-    /* STEP 4 — Memory safety: pagefile volume free-space check */
-    ULARGE_INTEGER freeBytes = {0};
+    /* Memory safety: pagefile volume free-space check */
+    ULARGE_INTEGER freeBytes;
+    ZeroMemory(&freeBytes, sizeof(freeBytes));
     if (GetDiskFreeSpaceExW(NULL, &freeBytes, NULL, NULL)) {
-        if (freeBytes.QuadPart < (8ULL << 30))
-            std::cout << "[TASX] WARNING: Pagefile volume < 8 GB free" << std::endl;
+        if (freeBytes.QuadPart < (8ULL << 30) && LogRateLimit("pagefile-low-boot", 300))
+            LOGW("[TASX] WARNING: Pagefile volume < 8 GB free");
     }
     bool isNew = !g_rbxHandles.count(pid);
     HookClient(pid);
+    if (g_rbxHandles.count(pid))
+        g_retryBlocked.erase(pid); /* hooked (possibly via retry) — dequeue */
     ApplyFocusIfChanged(); /* the new instance may already be the foreground */
 
     if (isNew && g_rbxHandles.count(pid)) {
         if (tasx_is_elevated() && config_get_bool("TASX", "PurgeStandbyOnLaunch", 1)) {
             if (tasx_purge_standby_list())
-                std::cout << "[TASX] Standby list purged (RAM reclaimed for the game)"
-                          << std::endl;
+                LOGI("[TASX] Standby list purged (RAM reclaimed for the game)");
         }
-        // Kill crash handlers only on RBX_ON (per spec) not periodically
         SweepCrashHandlers();
         FFlagsApply();
         UpdateWorkingSetCache();
@@ -508,7 +583,7 @@ void HandleRobloxCreated(DWORD pid)
 void HandleRobloxExited(DWORD pid)
 {
     ReleaseClient(pid, true);
-    // commit block auto-unblocks on next RBX_ON due to fresh check
+    // commit block auto-unblocks on next hook due to fresh check
 
     if (g_rbxHandles.empty()) {
         TimerOff();
@@ -516,21 +591,24 @@ void HandleRobloxExited(DWORD pid)
     }
 }
 
-int RunTasx()
+/* One-time startup in dependency order. Returns 1 when the main loop
+   should run, 0 when the process must exit silently (already running). */
+int InitSubsystems()
 {
-    char iniPath[MAX_PATH];
-    config_default_path(iniPath, MAX_PATH);
-    config_load(iniPath);
-    std::cout << "[TASX] Config: " << iniPath
-              << (config_loaded() ? " (loaded)" : " (defaults)") << std::endl;
+    tasx_log_init();
+
+    config_default_path(g_iniPath, MAX_PATH);
+    config_load(g_iniPath);
+    tasx_log_configure(config_get_str("Log", "LogFile", ""),
+                       tasx_log_level_from_str(config_get_str("Log", "LogLevel", "info")));
+    g_iniMtime = IniMtimeKey();
+    LOGI("[TASX] Config: %s%s", g_iniPath, config_loaded() ? " (loaded)" : " (defaults)");
 
     g_singleInstanceMutex = CreateMutexW(nullptr, TRUE, L"Local\\TASX_Optimizer_Mutex");
     if (g_singleInstanceMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
 #ifdef TASX_CONSOLE
-        std::cout << "[TASX] TASX is already running in the background"
-                     " (agent autostart or another window)." << std::endl;
-        std::cout << "[TASX] Nothing is broken - this window closes in 5 seconds."
-                  << std::endl;
+        LOGI("[TASX] TASX is already running in the background (agent autostart or another window).");
+        LOGI("[TASX] Nothing is broken - this window closes in 5 seconds.");
         Sleep(5000);
 #else
         MessageBoxW(nullptr,
@@ -542,6 +620,7 @@ int RunTasx()
     }
 
     SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+    SetConsoleCtrlHandler(CtrlHandler, TRUE);
 
     bool elevated = tasx_is_elevated() != 0;
 
@@ -550,7 +629,7 @@ int RunTasx()
         if (elevated)
             CpuSetBoostMode(0);
         else if (LogRateLimit("boost-noadmin", 3600))
-            std::cout << "[TASX] DisableCpuBoost skipped (needs admin)" << std::endl;
+            LOGW("[TASX] DisableCpuBoost skipped (needs admin)");
     }
     TweaksApplyOneShot();
     FFlagsApply();
@@ -558,40 +637,29 @@ int RunTasx()
     SystemCleanPass(true);
 
     bool jobsOk = JobsInit();
-    (void)jobsOk;
 
     // Startup banner: admin status, job mode, enabled/disabled features.
     // Printed ONCE — replaces the old per-feature "needs admin" spam.
-    std::cout << "[TASX] Admin: " << (elevated ? "YES (elevated)" : "NO (limited mode)")
-              << " | Job mode: "
-              << (jobsOk ? "native cgroup + per-process focus" : "per-process fallback")
-              << std::endl;
+    LOGI("[TASX] Admin: %s | Job mode: %s",
+         elevated ? "YES (elevated)" : "NO (limited mode)",
+         jobsOk ? "native cgroup + per-process focus" : "per-process fallback");
     if (!elevated) {
-        std::cout << "[TASX] Limited mode WITHOUT admin — DISABLED: standby purge, "
-                     "system cleaner, HKLM tweaks, ETW, CPU boost. ENABLED: priority, "
-                     "affinity, FFlags, crash-handler kill, trimmer(soft). "
-                     "Run Install\\ScheduledTaskInstaller.bat for full effect."
-                  << std::endl;
+        LOGI("[TASX] Limited mode WITHOUT admin — DISABLED: standby purge, system cleaner, HKLM tweaks, ETW, CPU boost. ENABLED: priority, affinity, FFlags, crash-handler kill, trimmer(soft). Run Install\\ScheduledTaskInstaller.bat for full effect.");
     } else {
-        std::cout << "[TASX] Features: priority, affinity, jobs, FFlags, trimmer, "
-                     "standby purge, system cleaner, HKLM tweaks — all ENABLED"
-                  << std::endl;
+        LOGI("[TASX] Features: priority, affinity, jobs, FFlags, trimmer, standby purge, system cleaner, HKLM tweaks — all ENABLED");
     }
 
-    // FPS config sanity: UncapFps=1 makes TargetFps meaningless (FFlags
-    // writer ignores it and uncapps to 999). Warn once instead of silently
-    // clamping to 30 as before.
+    // FPS config sanity (single place): UncapFps=1 makes TargetFps
+    // meaningless — the FFlags writer ignores it and uncaps to 999.
     if (config_get_bool("Roblox", "UncapFps", 1)) {
         int tf = config_get_int("Roblox", "TargetFps", 999);
-        if (tf < 240)
-            std::cout << "[FFlags] WARNING: UncapFps=1 conflicts with TargetFps="
-                      << tf << " -> TargetFps ignored (uncapped)" << std::endl;
+        if (tf < 240 && LogRateLimit("fps-conflict", 3600))
+            LOGW("[FFlags] WARNING: UncapFps=1 conflicts with TargetFps=%d -> TargetFps ignored (uncapped)", tf);
     }
 
     g_wmiOk = _wmimon();
     if (!g_wmiOk)
-        std::cout << "[TASX] WMI unavailable -> snapshot discovery active"
-                  << std::endl;
+        LOGW("[TASX] WMI unavailable -> snapshot discovery active");
 
     g_hook = new WinHook();
     g_hook->Start();
@@ -601,12 +669,43 @@ int RunTasx()
     SweepDiscover();
     ApplyFocusIfChanged();
     UpdateWorkingSetCache();
-    g_lastCrashSweepMs = GetTickCount64();
+    ULONGLONG now = GetTickCount64();
+    g_lastCrashSweepMs = now;
+    g_lastRetryMs = now;
+    g_lastIniCheckMs = now;
     if (!g_rbxHandles.empty()) { TweaksPowerEnter(); TimerOn(); }
 
-    std::cout << "[TASX] Launched" << std::endl;
+    LOGI("[TASX] Launched");
+    return 1;
+}
 
-    while (true)
+/* Teardown in reverse order. Runs on Ctrl/close/logoff and on natural exit
+   (the main loop only ends via g_stop, so this is always reached). */
+void ShutdownSubsystems()
+{
+    LOGI("[TASX] Shutting down...");
+    delete g_hook;
+    g_hook = nullptr;
+    _wmishutdown();
+    StopAllTrimmers();
+    JobShutdown();
+    TimerOff();
+    TweaksPowerExit();
+    if (g_singleInstanceMutex) {
+        ReleaseMutex(g_singleInstanceMutex);
+        CloseHandle(g_singleInstanceMutex);
+        g_singleInstanceMutex = nullptr;
+    }
+    LOGI("[TASX] Stopped");
+    tasx_log_shutdown();
+}
+
+int RunTasx()
+{
+    if (!InitSubsystems())
+        return 0;
+
+    while (!InterlockedCompareExchange(&g_stop, 0, 0))
     {
         auto ev = PopEvent(250);
 
@@ -614,8 +713,9 @@ int RunTasx()
             switch (ev->kind) {
             case Ev::RobloxCreated: HandleRobloxCreated(ev->pid); break;
             case Ev::RobloxExited:  HandleRobloxExited(ev->pid);  break;
-            case Ev::ChildSpawn:    KillCrashHandlerPid(ev->pid); break;
+            case Ev::JobChild:      KillCrashHandlerPid(ev->pid); break;
             case Ev::Focus:         ApplyFocusIfChanged();        break;
+            case Ev::ConfigChanged: HandleConfigChanged();        break;
             case Ev::LowMem: {
                 static ULONGLONG lastLowMemCleanMs = 0;
                 ULONGLONG now = GetTickCount64();
@@ -624,15 +724,14 @@ int RunTasx()
                     break;  // rate-limited
                 }
                 lastLowMemCleanMs = now;
-                std::cout << "[TASX] Low memory event -> reactive clean" << std::endl;
+                LOGI("[TASX] Low memory event -> reactive clean");
                 tasx_purge_standby_list();
                 TrimmerTrimAllAggressive();
                 // NEVER call SystemCleanPass (global WS empty) if focused client exists
                 if (g_appliedFocus == 0) {
                     SystemCleanPass(true);
                 } else {
-                    std::cout << "[TASX] Skipped system clean (focused PID "
-                              << g_appliedFocus << " active)" << std::endl;
+                    LOGI("[TASX] Skipped system clean (focused PID %lu active)", g_appliedFocus);
                 }
                 break;
             }
@@ -642,6 +741,7 @@ int RunTasx()
         // Focus safety net (hook may miss exotic switches): PopEvent timeout 250ms already does cadence via loop
         // But also ensure ApplyFocus on each iteration (lightweight, does GetForegroundWindow)
         ApplyFocusIfChanged();
+        RetryBlockedHooks();
 
         ULONGLONG now = GetTickCount64();
 
@@ -655,21 +755,22 @@ int RunTasx()
             // audio sessions appear/disappear without our knowledge -> periodic bulk sync
             AudioApplyBackgroundMute(ClientPidSet(), g_appliedFocus);
             JobsRefreshDynamic(g_appliedFocus != 0);
+            CheckIniReload();
         }
 
-        // Crash handlers: only every 60s plus on RBX_ON/ChildSpawn
+        // Crash handlers: only every 60s plus on RBX_ON/JobChild
         if (now - g_lastCrashSweepMs >= 60000) {
             SweepCrashHandlers();
             NetCacheLogConnections(ClientPidSet());
             g_lastCrashSweepMs = now;
 
-            // BUG 12: periodic pagefile free-space check (was only in
-            // HandleRobloxCreated) + self CPU watchdog.
-            ULARGE_INTEGER freeBytes = {0};
+            // periodic pagefile free-space check + self CPU watchdog.
+            ULARGE_INTEGER freeBytes;
+    ZeroMemory(&freeBytes, sizeof(freeBytes));
             if (GetDiskFreeSpaceExW(NULL, &freeBytes, NULL, NULL)) {
                 if (freeBytes.QuadPart < (8ULL << 30)) {
                     if (LogRateLimit("pagefile-low", 300))
-                        std::cout << "[TASX] WARNING: Pagefile volume < 8 GB free" << std::endl;
+                        LOGW("[TASX] WARNING: Pagefile volume < 8 GB free");
                 }
             }
             {
@@ -681,13 +782,12 @@ int RunTasx()
                         (((ULONGLONG)fkernel.dwHighDateTime << 32) | fkernel.dwLowDateTime) +
                         (((ULONGLONG)fuser.dwHighDateTime << 32) | fuser.dwLowDateTime);
                     if (lastCpuCheckMs && now > lastCpuCheckMs && ku >= lastSelfCpuMs) {
-                        int cpuPct = (int)((ku - lastSelfCpuMs) /
+                        int cpuPct = (int)(((ku - lastSelfCpuMs) * 100) /
                                            ((now - lastCpuCheckMs) * 10000));
                         int threshold = config_get_int("TASX", "SelfCpuWatchdogPercent", 5);
                         if (cpuPct > threshold && LogRateLimit("self-cpu", 300)) {
-                            std::cout << "[TASX] WARNING: Self CPU " << cpuPct
-                                      << "% exceeds watchdog threshold " << threshold
-                                      << "%" << std::endl;
+                            LOGW("[TASX] WARNING: Self CPU %d%% exceeds watchdog threshold %d%%",
+                                 cpuPct, threshold);
                         }
                     }
                     lastSelfCpuMs = ku;
@@ -697,14 +797,7 @@ int RunTasx()
         }
     }
 
-    StopAllTrimmers();
-    JobShutdown();
-    delete g_hook;
-    _wmishutdown();
-    if (g_singleInstanceMutex) {
-        ReleaseMutex(g_singleInstanceMutex);
-        CloseHandle(g_singleInstanceMutex);
-    }
+    ShutdownSubsystems();
     return 0;
 }
 

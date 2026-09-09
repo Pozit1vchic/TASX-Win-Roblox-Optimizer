@@ -47,10 +47,44 @@ int tasx_empty_working_sets_system(void);
    Cheap: OpenProcessToken + TokenElevation, no caching needed at startup. */
 int tasx_is_elevated(void);
 
+/* --- File + stdout logging (plain C, sync append + mutex, no threads) -- */
+
+typedef enum {
+    TASX_LOG_INFO  = 0,
+    TASX_LOG_WARN  = 1,
+    TASX_LOG_ERROR = 2
+} TasxLogLevel;
+
+/* Must be called once before any tasx_log (creates the lock). Safe to
+   call before config exists: output is stdout-only until configure(). */
+void tasx_log_init(void);
+
+/* logFilePath: NULL/empty = stdout only. Appends, rotates at 1 MB to
+   "<path>.old" (single backup). minLevel filters both outputs. */
+void tasx_log_configure(const char* logFilePath, int minLevel);
+
+/* "info"/"warn"/"error" (case-insensitive, first letter enough).
+   Unknown/NULL -> TASX_LOG_INFO. */
+int tasx_log_level_from_str(const char* s);
+
+/* printf-style, one line (appends '\n'). Thread-safe. */
+#if defined(__GNUC__) || defined(__clang__)
+#define TASX_PRINTF_FMT(a, b) __attribute__((format(printf, a, b)))
+#else
+#define TASX_PRINTF_FMT(a, b)
+#endif
+void tasx_log(int level, const char* fmt, ...) TASX_PRINTF_FMT(2, 3);
+
+void tasx_log_shutdown(void);
+
 /* --- Job Objects (2-job model: focus / background) -------------------- */
 
-/* Create a Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
-   Returns NULL on failure. */
+/* Create a Job Object. killOnClose != 0 sets
+   JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (farm dies with the agent —
+   TASX.ini KillOnAgentExit, default 1). Returns NULL on failure. */
+HANDLE tasx_job_create_ex(int killOnClose);
+
+/* tasx_job_create_ex(1). */
 HANDLE tasx_job_create(void);
 
 /* Assign process to job. Returns 1 on success. */
@@ -138,20 +172,6 @@ typedef struct {
    GetProcessMemoryInfo / CreateToolhelp32Snapshot at 100+ clients.
    Returns a malloc'd entry chain (caller frees with free()); NULL on fail. */
 TASX_SYS_PROC* tasx_query_system_processes(void);
-
-/* Per-core time counters (SystemProcessorPerformanceInformation = 8). One
-   syscall for every logical CPU; delta two samples to get busy percentages.
-   Returns malloc'd array, *outCount = element count; NULL on fail. */
-typedef struct {
-    LARGE_INTEGER IdleTime;
-    LARGE_INTEGER KernelTime;   /* excludes idle on this info class */
-    LARGE_INTEGER UserTime;
-    LARGE_INTEGER DpcTime;
-    LARGE_INTEGER InterruptTime;
-    ULONG InterruptCount;
-} TASX_SYS_PROC_PERF;
-
-TASX_SYS_PROC_PERF* tasx_query_processor_performance(unsigned long* outCount);
 
 #ifdef __cplusplus
 }

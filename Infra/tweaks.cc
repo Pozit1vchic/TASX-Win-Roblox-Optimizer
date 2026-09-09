@@ -2,10 +2,10 @@
 
 #include "config.h"
 #include "ntsys.h"
+#include "log.h"
 #include "lograte.h"
 
 #include <windows.h>
-#include <iostream>
 #include <string>
 
 namespace {
@@ -21,8 +21,7 @@ void SetRegValueDWORD(HKEY root, const wchar_t* path, const wchar_t* name,
         qr = RegCreateKeyExW(root, path, 0, nullptr, REG_OPTION_NON_VOLATILE,
                              KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &key, nullptr);
     if (qr != ERROR_SUCCESS) {
-        std::cout << "[TASX] Tweak '" << label << "' skipped (registry access denied)"
-                  << std::endl;
+        LOGW("[TASX] Tweak '%s' skipped (registry access denied)", label);
         return;
     }
 
@@ -34,9 +33,9 @@ void SetRegValueDWORD(HKEY root, const wchar_t* path, const wchar_t* name,
 
     if (RegSetValueExW(key, name, 0, REG_DWORD, (const BYTE*)&value,
                        sizeof(value)) == ERROR_SUCCESS)
-        std::cout << "[TASX] Tweak applied: " << label << std::endl;
+        LOGI("[TASX] Tweak applied: %s", label);
     else
-        std::cout << "[TASX] Tweak '" << label << "' write failed" << std::endl;
+        LOGW("[TASX] Tweak '%s' write failed", label);
 
     RegCloseKey(key);
 }
@@ -53,8 +52,7 @@ void SetRegValueString(HKEY root, const wchar_t* path, const wchar_t* name,
         qr = RegCreateKeyExW(root, path, 0, nullptr, REG_OPTION_NON_VOLATILE,
                              KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &key, nullptr);
     if (qr != ERROR_SUCCESS) {
-        std::cout << "[TASX] Tweak '" << label << "' skipped (registry access denied)"
-                  << std::endl;
+        LOGW("[TASX] Tweak '%s' skipped (registry access denied)", label);
         return;
     }
 
@@ -66,9 +64,9 @@ void SetRegValueString(HKEY root, const wchar_t* path, const wchar_t* name,
 
     DWORD bytes = (DWORD)((wcslen(value) + 1) * sizeof(wchar_t));
     if (RegSetValueExW(key, name, 0, REG_SZ, (const BYTE*)value, bytes) == ERROR_SUCCESS)
-        std::cout << "[TASX] Tweak applied: " << label << std::endl;
+        LOGI("[TASX] Tweak applied: %s", label);
     else
-        std::cout << "[TASX] Tweak '" << label << "' write failed" << std::endl;
+        LOGW("[TASX] Tweak '%s' write failed", label);
 
     RegCloseKey(key);
 }
@@ -130,22 +128,19 @@ void ExpandDesktopHeap()
 
     if (RegSetValueExW(key, L"Windows", 0, REG_EXPAND_SZ,
                        (const BYTE*)val.c_str(), bytes) == ERROR_SUCCESS)
-        std::cout << "[TASX] Desktop heap expanded to " << targetKB
-                  << " KB (reboot required)" << std::endl;
+        LOGI("[TASX] Desktop heap expanded to %d KB (reboot required)", targetKB);
 
     RegCloseKey(key);
 }
 
 PowerGetActiveSchemeFn GetPowerGetActiveScheme(HMODULE powr)
 {
-    return reinterpret_cast<PowerGetActiveSchemeFn>(
-        GetProcAddress(powr, "PowerGetActiveScheme"));
+    return TasxProcFn<PowerGetActiveSchemeFn>(powr, "PowerGetActiveScheme");
 }
 
 PowerSetActiveSchemeFn GetPowerSetActiveScheme(HMODULE powr)
 {
-    return reinterpret_cast<PowerSetActiveSchemeFn>(
-        GetProcAddress(powr, "PowerSetActiveScheme"));
+    return TasxProcFn<PowerSetActiveSchemeFn>(powr, "PowerSetActiveScheme");
 }
 
 const GUID kUltimatePerfGuid =
@@ -156,6 +151,39 @@ const GUID kHighPerfGuid =
 GUID g_prevScheme = {};
 bool  g_prevSaved = false;
 
+/* Full path of an installed RobloxPlayerBeta.exe for UserGpuPreferences
+   (the key works best with a full path). First match under
+   %LOCALAPPDATA%\Roblox\Versions; falls back to the bare exe name. */
+std::wstring FindRobloxPlayerExe()
+{
+    wchar_t la[MAX_PATH] = {};
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", la, MAX_PATH))
+        return L"RobloxPlayerBeta.exe";
+
+    std::wstring versions = std::wstring(la) + L"\\Roblox\\Versions";
+    WIN32_FIND_DATAW fd{};
+    HANDLE find = FindFirstFileW((versions + L"\\*").c_str(), &fd);
+    if (find == INVALID_HANDLE_VALUE)
+        return L"RobloxPlayerBeta.exe";
+
+    std::wstring hit;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+            continue;
+        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0)
+            continue;
+        std::wstring exe = versions + L"\\" + fd.cFileName +
+                           L"\\RobloxPlayerBeta.exe";
+        if (GetFileAttributesW(exe.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            hit = exe;
+            break;
+        }
+    } while (FindNextFileW(find, &fd));
+    FindClose(find);
+
+    return hit.empty() ? L"RobloxPlayerBeta.exe" : hit;
+}
+
 } /* namespace */
 
 void TweaksApplyOneShot()
@@ -164,8 +192,7 @@ void TweaksApplyOneShot()
 
     bool elevated = tasx_is_elevated() != 0;
     if (!elevated && LogRateLimit("tweaks-hklm-skip", 3600))
-        std::cout << "[TASX] HKLM tweaks skipped (needs admin) — HKCU tweaks still applied"
-                  << std::endl;
+        LOGW("[TASX] HKLM tweaks skipped (needs admin) — HKCU tweaks still applied");
 
     /* Game DVR off — its background capture pipeline costs FPS. */
     SetRegValueDWORD(HKEY_CURRENT_USER,
@@ -178,10 +205,11 @@ void TweaksApplyOneShot()
             L"SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR",
             L"AllowGameDVR", 0, "AllowGameDVR policy=0");
 
-    /* Route Roblox to the high-performance GPU. */
+    /* Route Roblox to the high-performance GPU (full exe path when an
+       install is found, bare name otherwise). */
     SetRegValueString(HKEY_CURRENT_USER,
         L"Software\\Microsoft\\DirectX\\UserGpuPreferences",
-        L"RobloxPlayerBeta.exe", L"GpuPreference=2;",
+        FindRobloxPlayerExe().c_str(), L"GpuPreference=2;",
         "Roblox GPU preference = High performance");
 
     /* Game Mode on — Windows itself deprioritizes background work in game. */
@@ -227,9 +255,8 @@ void TweaksApplyOneShot()
     ExpandDesktopHeap();
     }
 
-    std::cout << "[TASX] One-shot tweaks done"
-              << (elevated ? " (HKCU+HKLM)" : " (HKCU only, HKLM needs admin)")
-              << std::endl;
+    LOGI("[TASX] One-shot tweaks done%s",
+         elevated ? " (HKCU+HKLM)" : " (HKCU only, HKLM needs admin)");
 }
 
 void TweaksPowerEnter()
@@ -253,7 +280,7 @@ void TweaksPowerEnter()
         if (set(0, &kUltimatePerfGuid) != 0)
             set(0, &kHighPerfGuid);
 
-        std::cout << "[TASX] Power scheme -> Ultimate/High performance" << std::endl;
+        LOGI("[TASX] Power scheme -> Ultimate/High performance");
     }
 
     FreeLibrary(powr);
@@ -269,7 +296,7 @@ void TweaksPowerExit()
 
     auto set = GetPowerSetActiveScheme(powr);
     if (set && set(0, &g_prevScheme) == 0)
-        std::cout << "[TASX] Power scheme restored" << std::endl;
+        LOGI("[TASX] Power scheme restored");
 
     FreeLibrary(powr);
 }

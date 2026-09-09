@@ -16,17 +16,19 @@ TASX watches for Roblox processes (WMI process watcher + event-driven foreground
 **Background instances (multi-account farming)**
 
 - `IDLE_PRIORITY_CLASS`, pinned to efficiency cores on hybrid CPUs (or the low half of the CPU otherwise)
-- Windows Efficiency Mode (process + every thread), VeryLow I/O priority, VeryLow memory priority
-- Working set hard-trimmed on a schedule — **never while focused**, so trimming can't cause in-game stutter
+- Windows Efficiency Mode (process-level EcoQoS only, no per-thread enumeration), VeryLow I/O priority, VeryLow memory priority
+- Working set trimmed on a schedule — soft for recently unfocused, hard only for long-inactive — **never while focused**, so trimming can't cause in-game stutter; below `TrimSkipBelowMB` is skipped (0 syscalls, cached)
 
 **System-wide**
 
 - Game DVR / background capture off, MMCSS `Games` profile raised, network throttling off (`SystemResponsiveness=0`)
-- High-performance GPU preference registered for `RobloxPlayerBeta.exe`
+- High-performance GPU preference registered for the actual `RobloxPlayerBeta.exe` path (falls back to exe name)
 - Power scheme switched to Ultimate/High Performance while Roblox runs, restored afterwards
-- Standby memory list purged the moment Roblox launches (and optionally on a timer) — the game gets fresh RAM pages
-- `RobloxCrashHandler.exe` suppressed on an ongoing sweep
-- TASX FastFlags: FPS cap removed (999), optional renderer (Vulkan/D3D11/D3D10/OpenGL), lighting tech (Voxel/ShadowMap/Future), texture quality, telemetry off — merged into every installed client version's `ClientSettings\ClientAppSettings.json`, preserving your own flags
+- Standby memory list purged the moment Roblox launches (needs admin, otherwise safe-mode without HKLM/standby/system-cleaner)
+- `RobloxCrashHandler.exe` suppressed on an ongoing sweep (job-child filter: only crash handlers are killed)
+- TASX FastFlags: FPS cap removed (uncapped when `UncapFps=1`, otherwise `TargetFps`), optional renderer (Vulkan/D3D11/D3D10/OpenGL), lighting tech (Voxel/ShadowMap/Future), texture quality, telemetry off — merged into every installed client version's `ClientSettings\ClientAppSettings.json` atomically, preserving your own flags; mtime+hash skip avoids redundant rewrites
+- File logging (`[Log] LogFile`, 1 MB rotation to `.old`, simultaneous stdout) with level filter (`LogLevel=info|warn|error`); all log lines go through `LOGI/W/E` and are rate-limited
+- Hot-reload: `TASX.ini` mtime is polled every 10 s on the main loop — edits re-apply FFlags/tweaks/job limits and trimmer thresholds without restart or new threads
 
 All of the above is configurable — see `TASX.ini` (documented, optional; sane defaults apply without it).
 
@@ -71,32 +73,34 @@ make clean
 Infra/
   master.cpp   Orchestrator: one typed event queue fed by WMI, the job
                completion port, the foreground hook and the low-memory
-               reactor; single-threaded state machine (main/WinMain via
-               TASX_CONSOLE|TASX_GUI)
-  WMI.cc       Async WMI process watcher; extracts the PID straight from
-               TargetInstance.Handle - zero process-table rescans
-  jobs.cc      Job-per-client: priority/affinity/CPU+RAM caps rewritten in
-               place per focus switch (1 syscall); shared IOCP reports
-               EXIT_PROCESS / NEW_PROCESS event-driven (no exit polling,
-               instant RobloxCrashHandler kill)
-  CPU.cc       Topology discovery via GetLogicalProcessorInformationEx:
-               P-core/E-core masks, per-process scheduling fallback profile,
-               CPU boost toggle
+               reactor; single-threaded state machine via InitSubsystems() /
+               ShutdownSubsystems() and a Ctrl-handler (graceful exit,
+               power/Wait/Mutex teardown); hot-reload of TASX.ini by mtime
+  WMI.cc       Async WMI process watcher with Indication-drain (active count
+               + manual-reset event) to avoid Release races; extracts PID
+               straight from TargetInstance.Handle
+  jobs.cc      Single background cgroup (farm CPU/MEM caps, KILL_ON_CLOSE
+               gated by KillOnAgentExit); focus is per-process (priority/
+               affinity/EcoQoS via CPU.cc, never a cross-job move — always
+               ERROR_ACCESS_DENIED); IOCP filters NEW_PROCESS to
+               robloxcrashhandler.exe only
+  CPU.cc       No topology state — single source of truth is ntsys.c
+               (tasx_get_*_mask); per-process scheduling profile + boost toggle
   trimmer.cc   One scheduler thread + min-heap of trim deadlines: adaptive
-               interval by memory pressure, skip-if-below-threshold (0
-               syscalls), focused instance never trimmed
-  stats.cc     Whole-system process snapshot in ONE syscall
-               (NtQuerySystemInformation) for stats/discovery/sweeps
-  winhook.cc   EVENT_SYSTEM_FOREGROUND hook with a dedicated message pump
-               thread -> instant focus rebalancing
-  ntsys.c      [C] ntdll/privilege layer: NtSetTimerResolution,
-               NtSetSystemInformation (standby purge, system-wide empty
-               working sets), ProcessIoPriority, memory priority, power
-               throttling, system process table
-  config.c     [C] TASX.ini INI reader (no CRT-specific helpers)
-  tweaks.cc    One-shot registry tweaks + power scheme switch/restore
-  fflags.cc    Roblox ClientAppSettings.json reader/writer (merge, atomic
-               write, per-copy caps for multi-manager farms)
+               interval, skip-if-below-threshold, focused never trimmed,
+               soft/hard by unfocused age; no LowMem handle (single owner is
+               the master reactor)
+  stats.cc     Whole-system process snapshot in ONE syscall + helper
+               QueryProcessNameByPid for the job-port filter
+  winhook.cc   EVENT_SYSTEM_FOREGROUND hook (notification only; focus PID is
+               read via GetForegroundWindow — single mechanism)
+  ntsys.c      [C] ntdll/privilege layer + file logging (tasx_log, 1 MB
+               rotation), P/E topology, commit charge, ETW (verified GUIDs)
+  config.c     [C] TASX.ini reader with BOM skip + hot-reload (config_reload)
+  tweaks.cc    One-shot registry tweaks + power scheme; UserGpuPreferences
+               resolves the full exe path; HKLM gated by elevation
+  fflags.cc    Roblox ClientAppSettings.json reader/writer with escaped-quote
+               aware parsing and mtime+hash skip (atomic tmp+MoveFileEx)
 ```
 
 Designed for 100+ concurrent clients: no polling loops on the hot path (exits, crash handlers, memory cleaning and discovery are event-driven), ~5 threads total regardless of client count, and one syscall for whole-system state.

@@ -35,38 +35,16 @@ bool QueryProcStats(std::vector<ProcStat>& out)
     return true;
 }
 
-bool QueryCoreLoads(std::vector<double>& busyPct)
+std::wstring QueryProcessNameByPid(DWORD pid)
 {
-    static std::vector<double> prevIdle, prevBusy;
-    static bool havePrev = false;
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h) return std::wstring();
 
-    unsigned long count = 0;
-    TASX_SYS_PROC_PERF* perf = tasx_query_processor_performance(&count);
-    if (!perf || count == 0) return false;
-
-    std::vector<double> idle(count), busy(count);
-    for (unsigned long i = 0; i < count; ++i) {
-        idle[i] = (double)perf[i].IdleTime.QuadPart;
-        busy[i] = (double)perf[i].KernelTime.QuadPart
-                + (double)perf[i].UserTime.QuadPart;
-    }
-    free(perf);
-
-    if (!havePrev) {
-        prevIdle = std::move(idle);
-        prevBusy = std::move(busy);
-        havePrev = true;
-        return false; /* need a delta window */
-    }
-
-    busyPct.assign(count, 0.0);
-    for (unsigned long i = 0; i < count; ++i) {
-        double db = busy[i] - prevBusy[i];
-        double di = idle[i] - prevIdle[i];
-        double total = db + di;
-        busyPct[i] = total > 0.0 ? db / total * 100.0 : 0.0;
-    }
-    prevIdle = std::move(idle);
-    prevBusy = std::move(busy);
-    return true;
+    wchar_t path[MAX_PATH] = {};
+    DWORD size = MAX_PATH;
+    std::wstring name;
+    if (QueryFullProcessImageNameW(h, 0, path, &size))
+        name = path;
+    CloseHandle(h);
+    return name;
 }

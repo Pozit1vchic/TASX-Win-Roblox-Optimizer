@@ -1,16 +1,12 @@
 #include "fflags.h"
 #include "config.h"
+#include "log.h"
 #include "lograte.h"
 #include <windows.h>
 #include <string>
-#include <wchar.h>
-#include <iostream>
-
-#include <windows.h>
 
 #include <algorithm>
 #include <fstream>
-#include <iostream>
 #include <map>
 #include <sstream>
 #include <string>
@@ -22,13 +18,25 @@ namespace {
 /* ClientAppSettings.json is a flat string->string object; the parser below
    is deliberately minimal and only trusts that shape. Roblox ignores
    unknown flags, so stale names are harmless. */
+size_t FindClosingQuote(const std::string& json, size_t from)
+{
+    /* Skips \" escapes so valid JSON with quotes inside values parses. */
+    size_t i = from;
+    while (i < json.size()) {
+        if (json[i] == '\\' && i + 1 < json.size()) { i += 2; continue; }
+        if (json[i] == '"') return i;
+        ++i;
+    }
+    return std::string::npos;
+}
+
 std::map<std::string, std::string> ParseFlags(const std::string& json)
 {
     std::map<std::string, std::string> out;
 
     size_t i = 0;
     while ((i = json.find('"', i)) != std::string::npos) {
-        size_t keyEnd = json.find('"', i + 1);
+        size_t keyEnd = FindClosingQuote(json, i + 1);
         if (keyEnd == std::string::npos) break;
         std::string key = json.substr(i + 1, keyEnd - i - 1);
 
@@ -37,7 +45,7 @@ std::map<std::string, std::string> ParseFlags(const std::string& json)
 
         size_t vs = json.find('"', colon);
         if (vs == std::string::npos) break;
-        size_t ve = json.find('"', vs + 1);
+        size_t ve = FindClosingQuote(json, vs + 1);
         if (ve == std::string::npos) break;
 
         out[key] = json.substr(vs + 1, ve - vs - 1);
@@ -76,6 +84,22 @@ struct FlagPlan {
     std::vector<std::string> remove;          /* stripped before the merge  */
 };
 
+/* Stable identity of (file state, plan): stat failures are uniformly
+   ignored (treated as "unknown — must read"), never as errors. */
+bool FileKey(const std::wstring& jsonPath, unsigned long long planHash,
+             unsigned long long& outKey)
+{
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (!GetFileAttributesExW(jsonPath.c_str(), GetFileExInfoStandard, &fad))
+        return false;
+    outKey = ((((unsigned long long)fad.nFileSizeLow) |
+               ((unsigned long long)fad.nFileSizeHigh << 32)) ^
+              (((unsigned long long)fad.ftLastWriteTime.dwLowDateTime) |
+               ((unsigned long long)fad.ftLastWriteTime.dwHighDateTime << 32)) ^
+              planHash);
+    return true;
+}
+
 void BuildFlagPlan(FlagPlan& plan)
 {
     auto set = [&plan](const char* k, const std::string& v) {
@@ -94,14 +118,10 @@ void BuildFlagPlan(FlagPlan& plan)
 
     /* FPS unlock — the headline lever.
        UncapFps=1 means "no cap": TargetFps is IGNORED (uncapped to 999).
-       TargetFps applies ONLY when UncapFps=0 (e.g. background cap).
-       The old silent clamp (fps<30 -> 30) turned UncapFps=1+TargetFps=10
-       into a 30 FPS cap with zero warning — the exact conflict from logs. */
+       TargetFps applies ONLY when UncapFps=0 (e.g. capped background farm).
+       The UncapFps/TargetFps conflict warning lives in master.cpp startup
+       (single place) — not here, this plan builder runs per spawn. */
     if (config_get_bool("Roblox", "UncapFps", 1)) {
-        int raw = config_get_int("Roblox", "TargetFps", 999);
-        if (raw < 240 && LogRateLimit("fflags-fps-conflict", 3600))
-            std::cout << "[FFlags] WARNING: UncapFps=1 conflicts with TargetFps="
-                      << raw << " -> TargetFps ignored (uncapped)" << std::endl;
         set("DFIntTaskSchedulerTargetFps", "999");
         set("FFlagTaskSchedulerLimitTargetFpsTo2402", "False");
     } else {
@@ -177,8 +197,6 @@ bool ApplyToVersion(const std::wstring& versionDir, const FlagPlan& plan)
     // mtime+size pre-check: skip the read entirely when neither the file
     // nor our plan changed since the last pass (farm spawns 100 clients —
     // re-reading every JSON on every spawn is pure I/O waste).
-    // Key = json path, value = (planHash, fileSize, mtimeLow+High).
-    static std::unordered_map<std::wstring, unsigned long long> s_planCache;
     static std::unordered_map<std::wstring, unsigned long long> s_fileCache;
     unsigned long long planHash = 1469598103934665603ull; // FNV-1a
     auto mix = [&](const std::string& s) {
@@ -191,17 +209,10 @@ bool ApplyToVersion(const std::wstring& versionDir, const FlagPlan& plan)
     for (auto& kv : plan.set) { mix(kv.first); mix(kv.second); }
     for (auto& k : plan.remove) mix(k);
     {
-        WIN32_FILE_ATTRIBUTE_DATA fad{};
-        if (GetFileAttributesExW(jsonPath.c_str(), GetFileExInfoStandard, &fad)) {
-            unsigned long long fkey =
-                (((unsigned long long)fad.nFileSizeLow) |
-                 ((unsigned long long)fad.nFileSizeHigh << 32)) ^
-                (((unsigned long long)fad.ftLastWriteTime.dwLowDateTime) |
-                 ((unsigned long long)fad.ftLastWriteTime.dwHighDateTime << 32));
-            auto itp = s_planCache.find(jsonPath);
-            auto itf = s_fileCache.find(jsonPath);
-            if (itp != s_planCache.end() && itf != s_fileCache.end() &&
-                itp->second == planHash && itf->second == fkey)
+        unsigned long long fkey = 0;
+        if (FileKey(jsonPath, planHash, fkey)) {
+            auto it = s_fileCache.find(jsonPath);
+            if (it != s_fileCache.end() && it->second == fkey)
                 return false; // already in desired state, verified last pass
         }
     }
@@ -219,17 +230,11 @@ bool ApplyToVersion(const std::wstring& versionDir, const FlagPlan& plan)
 
     std::string merged = SerializeFlags(flags);
     if (merged == existing) {
-        // Record verified state so the next pass skips the read via mtime.
-        WIN32_FILE_ATTRIBUTE_DATA fad{};
-        if (GetFileAttributesExW(jsonPath.c_str(), GetFileExInfoStandard, &fad)) {
-            unsigned long long fkey =
-                (((unsigned long long)fad.nFileSizeLow) |
-                 ((unsigned long long)fad.nFileSizeHigh << 32)) ^
-                (((unsigned long long)fad.ftLastWriteTime.dwLowDateTime) |
-                 ((unsigned long long)fad.ftLastWriteTime.dwHighDateTime << 32));
-            s_planCache[jsonPath] = planHash;
+        // Record verified state so the next pass skips the read.
+        // Stat failure is ignored (simply no cache entry).
+        unsigned long long fkey = 0;
+        if (FileKey(jsonPath, planHash, fkey))
             s_fileCache[jsonPath] = fkey;
-        }
         return false; /* nothing to do */
     }
 
@@ -238,8 +243,7 @@ bool ApplyToVersion(const std::wstring& versionDir, const FlagPlan& plan)
     out << merged;
     out.close();
     if (!out) {
-        std::cout << "[FFlags] Failed to write into "
-                  << WideToUtf8(versionDir) << std::endl;
+        LOGW("[FFlags] Failed to write into %s", WideToUtf8(versionDir).c_str());
         return false;
     }
 
@@ -249,28 +253,21 @@ bool ApplyToVersion(const std::wstring& versionDir, const FlagPlan& plan)
         DeleteFileW(tmpPath.c_str());
         // Deleted/locked version dir during Roblox update — not fatal.
         if (LogRateLimit("fflags-movefail", 60))
-            std::cout << "[FFlags] Skip " << WideToUtf8(versionDir)
-                      << " (locked/removed, err " << err << ")" << std::endl;
+            LOGW("[FFlags] Skip %s (locked/removed, err %lu)",
+                 WideToUtf8(versionDir).c_str(), (unsigned long)err);
         return false;
     }
 
-    // Refresh cache to post-write state.
+    // Refresh cache to post-write state (stat failure ignored).
     {
-        WIN32_FILE_ATTRIBUTE_DATA fad{};
-        if (GetFileAttributesExW(jsonPath.c_str(), GetFileExInfoStandard, &fad)) {
-            unsigned long long fkey =
-                (((unsigned long long)fad.nFileSizeLow) |
-                 ((unsigned long long)fad.nFileSizeHigh << 32)) ^
-                (((unsigned long long)fad.ftLastWriteTime.dwLowDateTime) |
-                 ((unsigned long long)fad.ftLastWriteTime.dwHighDateTime << 32));
-            s_planCache[jsonPath] = planHash;
+        unsigned long long fkey = 0;
+        if (FileKey(jsonPath, planHash, fkey))
             s_fileCache[jsonPath] = fkey;
-        }
     }
 
     if (LogRateLimit("fflags-applied", 10))
-        std::cout << "[FFlags] Applied " << plan.set.size()
-                  << " flags -> " << WideToUtf8(jsonPath) << std::endl;
+        LOGI("[FFlags] Applied %u flags -> %s", (unsigned)plan.set.size(),
+             WideToUtf8(jsonPath).c_str());
     return true;
 }
 
@@ -319,8 +316,7 @@ void FFlagsApply()
         // telemetry keys, ApplyToVersion preserves injector-owned flags.
         // Once per hour max: was spammed on every process spawn.
         if (LogRateLimit("fflags-injector", 3600))
-            std::cout << "[FFlags] InjectorOwnsGraphics=1 — writing telemetry only"
-                      << std::endl;
+            LOGI("[FFlags] InjectorOwnsGraphics=1 — writing telemetry only");
     }
     FlagPlan plan;
     BuildFlagPlan(plan);
@@ -357,11 +353,11 @@ void FFlagsApply()
         int before = scanned;
         ScanVersionsRoot(wItem, plan, scanned, applied);
         if (scanned > before && LogRateLimit("fflags-extraroot", 60))
-            std::cout << "[FFlags] Extra root processed: " << item << std::endl;
+            LOGI("[FFlags] Extra root processed: %s", item.c_str());
     }
 
     // Log only real work: silent when everything already in desired state.
     if (applied)
-        std::cout << "[FFlags] " << applied << " file(s) rewritten, "
-                  << scanned << " version(s) scanned" << std::endl;
+        LOGI("[FFlags] %d file(s) rewritten, %d version(s) scanned",
+             applied, scanned);
 }

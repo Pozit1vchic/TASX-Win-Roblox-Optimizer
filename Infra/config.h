@@ -8,6 +8,10 @@ extern "C" {
    ignored unless the file path changes. Missing files keep built-in defaults. */
 void config_load(const char* iniPath);
 
+/* Drops all cached entries and re-reads the file (hot-reload).
+   Missing file keeps previous defaults for absent keys. */
+void config_reload(const char* iniPath);
+
 /* Fills out with "<exe dir>\TASX.ini". */
 void config_default_path(char* out, int outLen);
 

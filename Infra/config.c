@@ -20,6 +20,16 @@ typedef struct {
 static CfgEntry g_entries[CFG_MAX_ENTRIES];
 static int      g_count     = 0;
 static int      g_wasLoaded = 0;
+static CRITICAL_SECTION g_cfgCs;
+static int      g_cfgCsInit = 0;
+
+static void ensure_cfg_cs(void)
+{
+    if (!g_cfgCsInit) {
+        InitializeCriticalSection(&g_cfgCs);
+        g_cfgCsInit = 1;
+    }
+}
 
 static char ascii_lower(char c)
 {
@@ -38,10 +48,15 @@ static int ascii_ieq(const char* a, const char* b)
 
 static void trim_inplace(char* s)
 {
+    char* start = s;
     size_t len;
     char* end;
 
-    while (*s == ' ' || *s == '\t') ++s;
+    while (*start == ' ' || *start == '\t') ++start;
+    if (start != s) {
+        size_t n = strlen(start);
+        memmove(s, start, n + 1);
+    }
 
     len = strlen(s);
     end = s + len;
@@ -54,11 +69,16 @@ static void trim_inplace(char* s)
 static int find_entry(const char* section, const char* key)
 {
     int i;
+    ensure_cfg_cs();
+    EnterCriticalSection(&g_cfgCs);
     for (i = 0; i < g_count; ++i) {
         if (ascii_ieq(g_entries[i].section, section) &&
-            ascii_ieq(g_entries[i].key, key))
+            ascii_ieq(g_entries[i].key, key)) {
+            LeaveCriticalSection(&g_cfgCs);
             return i;
+        }
     }
+    LeaveCriticalSection(&g_cfgCs);
     return -1;
 }
 
@@ -68,11 +88,26 @@ void config_load(const char* iniPath)
     char line[256];
     char curSection[CFG_SECTION_LEN];
 
-    if (g_wasLoaded) return;
+    ensure_cfg_cs();
+    EnterCriticalSection(&g_cfgCs);
+    if (g_wasLoaded) { LeaveCriticalSection(&g_cfgCs); return; }
     g_wasLoaded = 1;
+    /* Hold the lock for the whole parse so concurrent readers (trimmer/job
+       threads) never see a half-written entry. INI is tiny (< 5 KB). */
 
     fp = fopen(iniPath, "r");
-    if (!fp) return;
+    if (!fp) { LeaveCriticalSection(&g_cfgCs); return; }
+
+    /* Skip a UTF-8 BOM if present, otherwise the first section header
+       ("[TASX]" read as "\xEF\xBB\xBF[TASX]") never matches. */
+    {
+        unsigned char bom[3] = { 0, 0, 0 };
+        size_t n = fread(bom, 1, 3, fp);
+        long start = 0;
+        if (n == 3 && bom[0] == 0xEF && bom[1] == 0xBB && bom[2] == 0xBF)
+            start = 3;
+        fseek(fp, start, SEEK_SET);
+    }
 
     curSection[0] = '\0';
 
@@ -130,6 +165,7 @@ void config_load(const char* iniPath)
     }
 
     fclose(fp);
+    LeaveCriticalSection(&g_cfgCs);
 }
 
 void config_default_path(char* out, int outLen)
@@ -200,4 +236,14 @@ int config_get_bool(const char* section, const char* key, int defVal)
     }
     if (c == '1' || c == 't' || c == 'y') return 1;
     return defVal;
+}
+
+void config_reload(const char* iniPath)
+{
+    ensure_cfg_cs();
+    EnterCriticalSection(&g_cfgCs);
+    g_count = 0;
+    g_wasLoaded = 0;
+    LeaveCriticalSection(&g_cfgCs);
+    config_load(iniPath);
 }

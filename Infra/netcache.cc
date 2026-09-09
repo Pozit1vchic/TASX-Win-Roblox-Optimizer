@@ -1,10 +1,10 @@
 #include "netcache.h"
 
 #include "config.h"
+#include "log.h"
 
 #include <iphlpapi.h>
 
-#include <iostream>
 #include <string>
 #include <vector>
 
@@ -13,6 +13,17 @@
 #endif
 
 namespace {
+
+std::string Narrow(const std::wstring& w)
+{
+    if (w.empty()) return std::string();
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0,
+                                nullptr, nullptr);
+    if (n <= 1) return std::string();
+    std::string s((size_t)(n - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, &s[0], n, nullptr, nullptr);
+    return s;
+}
 
 std::wstring ExpandPath(std::wstring p)
 {
@@ -31,11 +42,14 @@ bool IsReparsePoint(const std::wstring& path)
            (attrs & FILE_ATTRIBUTE_REPARSE_POINT);
 }
 
-/* NTFS mount point (junction) via FSCTL_SET_REPARSE_POINT. */
+/* NTFS mount point (junction) via FSCTL_SET_REPARSE_POINT. On failure the
+   empty directory created above is removed again (no litter). */
 bool CreateJunction(const std::wstring& link, const std::wstring& target)
 {
-    if (!CreateDirectoryW(link.c_str(), nullptr) &&
-        GetLastError() != ERROR_ALREADY_EXISTS)
+    bool createdDir = false;
+    if (CreateDirectoryW(link.c_str(), nullptr))
+        createdDir = true;
+    else if (GetLastError() != ERROR_ALREADY_EXISTS)
         return false;
 
     HANDLE h = CreateFileW(link.c_str(), GENERIC_WRITE, 0, nullptr,
@@ -43,7 +57,10 @@ bool CreateJunction(const std::wstring& link, const std::wstring& target)
                            FILE_FLAG_OPEN_REPARSE_POINT |
                            FILE_FLAG_BACKUP_SEMANTICS,
                            nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
+    if (h == INVALID_HANDLE_VALUE) {
+        if (createdDir) RemoveDirectoryW(link.c_str());
+        return false;
+    }
 
     std::wstring sub = L"\\??\\" + target;
 
@@ -75,10 +92,11 @@ bool CreateJunction(const std::wstring& link, const std::wstring& target)
                               nullptr, 0, &ret, nullptr);
     CloseHandle(h);
 
-    if (!ok)
-        std::cout << "[Net] Junction create failed for "
-                  << std::string(link.begin(), link.end())
-                  << " | Code: " << GetLastError() << std::endl;
+    if (!ok) {
+        LOGW("[Net] Junction create failed for %s | Code: %lu",
+             Narrow(link).c_str(), (unsigned long)GetLastError());
+        if (createdDir) RemoveDirectoryW(link.c_str());
+    }
     return ok != FALSE;
 }
 
@@ -113,22 +131,17 @@ void EnsureSharedCache(const std::wstring& linkIn, const std::wstring& rootIn)
         if (empty) {
             if (!RemoveDirectoryW(link.c_str())) return;
             if (CreateJunction(link, target))
-                std::cout << "[Net] Cache junction created: "
-                          << std::string(link.begin(), link.end()) << std::endl;
+                LOGI("[Net] Cache junction created: %s", Narrow(link).c_str());
         }
         else {
-            std::cout << "[Net] NOTE: non-empty cache dir "
-                      << std::string(link.begin(), link.end())
-                      << " - merge its contents into "
-                      << std::string(target.begin(), target.end())
-                      << " manually, then rerun TASX." << std::endl;
+            LOGW("[Net] NOTE: non-empty cache dir %s - merge its contents into %s manually, then rerun TASX.",
+                 Narrow(link).c_str(), Narrow(target).c_str());
         }
         return;
     }
 
     if (CreateJunction(link, target))
-        std::cout << "[Net] Cache junction created: "
-                  << std::string(link.begin(), link.end()) << std::endl;
+        LOGI("[Net] Cache junction created: %s", Narrow(link).c_str());
 }
 
 } /* namespace */
@@ -183,6 +196,6 @@ void NetCacheLogConnections(const std::unordered_set<DWORD>& clientPids)
             clientPids.count(table->table[i].dwOwningPid))
             ++established;
 
-    std::cout << "[Net] " << clientPids.size() << " client(s), "
-              << established << " established connection(s)" << std::endl;
+    LOGI("[Net] %u client(s), %d established connection(s)",
+         (unsigned)clientPids.size(), established);
 }

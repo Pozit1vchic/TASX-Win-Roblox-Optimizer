@@ -17,6 +17,6 @@ struct ProcStat {
    CreateToolhelp32Snapshot scans. */
 bool QueryProcStats(std::vector<ProcStat>& out);
 
-/* Per-core busy percentage (delta of two NtQuerySystemInformation samples).
-   First call only primes the baseline and returns false. */
-bool QueryCoreLoads(std::vector<double>& busyPct);
+/* Full image path of one PID ("" when not accessible). Used by the job
+   completion-port filter and the crash-handler sweep. */
+std::wstring QueryProcessNameByPid(DWORD pid);

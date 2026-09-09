@@ -1,9 +1,6 @@
 #include "winhook.h"
 
-#include <iostream>
-#include <thread>
-
-std::atomic<DWORD> WinHook::s_foregroundPid{0};
+#include "log.h"
 
 WinHook::~WinHook()
 {
@@ -13,11 +10,6 @@ WinHook::~WinHook()
         WaitForSingleObject(m_pumpThread, 2000);
         CloseHandle(m_pumpThread);
     }
-}
-
-DWORD WinHook::ForegroundPid()
-{
-    return s_foregroundPid.load();
 }
 
 void WinHook::Start()
@@ -34,8 +26,7 @@ void WinHook::Start()
                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
 
             if (!hook->m_hook) {
-                std::cout << "[TASX] Foreground hook unavailable, polling only"
-                          << std::endl;
+                LOGW("[TASX] Foreground hook unavailable, polling only");
                 return 0;
             }
 
@@ -48,14 +39,11 @@ void WinHook::Start()
         this, 0, &m_pumpThreadId);
 
     if (!m_pumpThread)
-        std::cout << "[TASX] Failed to start foreground hook pump" << std::endl;
+        LOGW("[TASX] Failed to start foreground hook pump");
 }
 
-void CALLBACK WinHook::HookCallback(HWINEVENTHOOK, DWORD, HWND hwnd,
+void CALLBACK WinHook::HookCallback(HWINEVENTHOOK, DWORD, HWND,
                                     LONG, LONG, DWORD, DWORD)
 {
-    DWORD pid = 0;
-    GetWindowThreadProcessId(hwnd, &pid);
-    s_foregroundPid.store(pid);
     NotifyFocusChanged();
 }
