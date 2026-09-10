@@ -18,6 +18,7 @@ TASX watches for Roblox processes (WMI process watcher + event-driven foreground
 - `IDLE_PRIORITY_CLASS`, pinned to efficiency cores on hybrid CPUs (or the low half of the CPU otherwise)
 - Windows Efficiency Mode (process-level EcoQoS only, no per-thread enumeration), VeryLow I/O priority, Low memory priority on farms (`BackgroundMemPriority=2`, VeryLow elsewhere)
 - Farm keep-hot (`FarmKeepHot=1` on farm presets): unfocused farm clients are WORKING, not idle — periodic pass is soft-only, hard trim (`EmptyWorkingSet`) only after `HardTrimAfterSec` (default 1800s) of continuous unfocus or commit-critical ≥90% — **never while focused**; below `TrimSkipBelowMB` (default 250) is skipped (0 syscalls, cached); 30s log line carries `avg WS MB, commit%` for farm sizing
+- **FarmBoost hotkey** (`BoostHotkey=Ctrl+Alt+B`, system-wide): one keypress flips ALL clients between `IDLE/E-cores/EcoQoS` and full power (`HIGH/all cores`, EcoQoS off, trimming suspended) with a single summary line — the fix for farms that rot in efficiency mode. Newborns join the hot side automatically; focus switches never demote while ON; `FarmBoostDefault=1` starts hot. Set `BoostHotkey=off` to disable (e.g. combo taken by macro soft)
 
 **System-wide**
 
@@ -101,6 +102,9 @@ Infra/
                QueryProcessNameByPid for the job-port filter
   winhook.cc   EVENT_SYSTEM_FOREGROUND hook (notification only; focus PID is
                read via GetForegroundWindow — single mechanism)
+  hotkey.cc    System-wide FarmBoost hotkey via RegisterHotKey on a dedicated
+               message-pump thread (no window/DLL/polling); combo parsed from
+               BoostHotkey, event-driven toggle in master.cpp
   ntsys.c      [C] ntdll/privilege layer + file logging (tasx_log, 1 MB
                rotation), P/E topology, commit charge, ETW (verified GUIDs)
   config.c     [C] TASX.ini reader with BOM skip + hot-reload (config_reload),

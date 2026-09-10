@@ -35,6 +35,7 @@ $pagef   = ($lines | Where-Object { $_ -match 'Pagefile volume .* low free' }).C
 $jobden  = ($lines | Where-Object { $_ -match '\[Jobs\] PID \d+ (assign denied|already in foreign job)' }).Count
 $focus   = ($lines | Where-Object { $_ -match '\[TASX\] Roblox PID \d+ (in focus|lost focus)' }).Count
 $trimsum = ($lines | Where-Object { $_ -match '\[Trimmer\] \d+ client\(s\).*avg WS' }).Count
+$boost   = ($lines | Where-Object { $_ -match '\[TASX\] FarmBoost (ON|OFF)' }).Count
 
 Write-Host "[E2E] Observed over log window ($($lines.Count) lines):"
 Write-Host "  [TASX] Low memory event          : $lowmem (allowed ~ window/$SystemCleanMinIntervalSec)"
@@ -45,6 +46,7 @@ Write-Host "  [TASX] Pagefile low              : $pagef (rate-limited 300s)"
 Write-Host "  [Jobs] denied/foreign fallback   : $jobden (<=1 per PID per 300s)"
 Write-Host "  [TASX] Focus switches (dwell)    : $focus (coalesced)"
 Write-Host "  [Trimmer] 30s summaries w/ WS    : $trimsum (expect >= window/30 - 1)"
+Write-Host "  [TASX] FarmBoost toggles         : $boost (manual hotkey presses only)"
 
 # Repeat check: no identical line more than 3 times per 10s slice of the log.
 # TASX stdout has no timestamps, so slices are approximated by line batches:

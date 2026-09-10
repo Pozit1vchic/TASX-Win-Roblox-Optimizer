@@ -28,7 +28,7 @@ void SetRegValueDWORD(HKEY root, const wchar_t* path, const wchar_t* name,
     qr = RegQueryValueExW(key, name, nullptr, &type, (LPBYTE)&cur, &size);
     if (qr == ERROR_SUCCESS && type == REG_DWORD && cur == value) {
         RegCloseKey(key);
-        return; /* already correct — keep the log quiet */
+        return; /* already correct - keep the log quiet */
     }
 
     if (RegSetValueExW(key, name, 0, REG_DWORD, (const BYTE*)&value,
@@ -192,9 +192,9 @@ void TweaksApplyOneShot()
 
     bool elevated = tasx_is_elevated() != 0;
     if (!elevated && LogRateLimit("tweaks-hklm-skip", 3600))
-        LOGW("[TASX] HKLM tweaks skipped (needs admin) — HKCU tweaks still applied");
+        LOGW("[TASX] HKLM tweaks skipped (needs admin) - HKCU tweaks still applied");
 
-    /* Game DVR off — its background capture pipeline costs FPS. */
+    /* Game DVR off - its background capture pipeline costs FPS. */
     SetRegValueDWORD(HKEY_CURRENT_USER,
         L"System\\GameConfigStore", L"GameDVR_Enabled", 0, "GameDVR_Enabled=0");
     SetRegValueDWORD(HKEY_CURRENT_USER,
@@ -212,7 +212,7 @@ void TweaksApplyOneShot()
         FindRobloxPlayerExe().c_str(), L"GpuPreference=2;",
         "Roblox GPU preference = High performance");
 
-    /* Game Mode on — Windows itself deprioritizes background work in game. */
+    /* Game Mode on - Windows itself deprioritizes background work in game. */
     SetRegValueDWORD(HKEY_CURRENT_USER,
         L"Software\\Microsoft\\GameBar",
         L"AutoGameModeEnabled", 1, "Game Mode enabled");

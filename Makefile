@@ -2,16 +2,17 @@ CC  = gcc
 CXX = g++
 
 CFLAGS   = -std=c11 -O2 -m64 -Wall -Wextra
-CXXFLAGS = -std=c++17 -O2 -m64 -static -Wall -Wextra
+CXXFLAGS = -std=c++23 -O2 -m64 -static -Wall -Wextra
 
 LDFLAGS = -lwbemuuid -lpsapi -lpowrprof -luser32 -lkernel32 -lole32 -loleaut32 -luuid -lcomctl32 -ladvapi32 -liphlpapi
 
 HEADERS = Infra/CPU.h Infra/WMI.h Infra/trimmer.h Infra/winhook.h \
           Infra/config.h Infra/ntsys.h Infra/tweaks.h Infra/fflags.h \
           Infra/jobs.h Infra/stats.h Infra/audio.h Infra/warm.h \
-          Infra/desktop.h Infra/netcache.h Infra/log.h Infra/lograte.h
+          Infra/desktop.h Infra/netcache.h Infra/hotkey.h \
+          Infra/log.h Infra/lograte.h
 
-OBJS = master.o CPU.o WMI.o trimmer.o winhook.o config.o ntsys.o tweaks.o fflags.o jobs.o stats.o audio.o warm.o desktop.o netcache.o
+OBJS = master.o CPU.o WMI.o trimmer.o winhook.o hotkey.o config.o ntsys.o tweaks.o fflags.o jobs.o stats.o audio.o warm.o desktop.o netcache.o
 RES  = tasx.res
 
 all: TASX.exe
@@ -41,6 +42,9 @@ trimmer.o: Infra/trimmer.cc Infra/trimmer.h Infra/config.h Infra/ntsys.h Infra/s
 
 winhook.o: Infra/winhook.cc Infra/winhook.h
 	$(CXX) $(CXXFLAGS) -c Infra/winhook.cc -o winhook.o
+
+hotkey.o: Infra/hotkey.cc Infra/hotkey.h Infra/config.h
+	$(CXX) $(CXXFLAGS) -c Infra/hotkey.cc -o hotkey.o
 
 jobs.o: Infra/jobs.cc Infra/jobs.h Infra/CPU.h Infra/config.h
 	$(CXX) $(CXXFLAGS) -c Infra/jobs.cc -o jobs.o

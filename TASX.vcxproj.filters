@@ -14,6 +14,9 @@
     <ClCompile Include="Infra\winhook.cc">
       <Filter>Infra\Core</Filter>
     </ClCompile>
+    <ClCompile Include="Infra\hotkey.cc">
+      <Filter>Infra\Core</Filter>
+    </ClCompile>
     <ClCompile Include="Infra\tweaks.cc">
       <Filter>Infra\Core</Filter>
     </ClCompile>
@@ -56,6 +59,9 @@
       <Filter>Infra\Header</Filter>
     </ClInclude>
     <ClInclude Include="Infra\winhook.h">
+      <Filter>Infra\Header</Filter>
+    </ClInclude>
+    <ClInclude Include="Infra\hotkey.h">
       <Filter>Infra\Header</Filter>
     </ClInclude>
     <ClInclude Include="Infra\tweaks.h">

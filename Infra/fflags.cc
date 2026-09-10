@@ -50,7 +50,7 @@ static bool IsGraphicsFlag(const std::string& k)
 }
 
 /* Official Roblox local allowlist (announcement 29.09.2025, re-checked
-   01.08.2026): 18 keys — 4 geometry, 13 rendering, 1 UI. Everything else in
+   01.08.2026): 18 keys - 4 geometry, 13 rendering, 1 UI. Everything else in
    ClientAppSettings.json is silently ignored by the client. The list is
    signed per channel and can change without notice; unknown keys get a
    one-time LOGW (see SuggestReplacement). */
@@ -86,7 +86,7 @@ static bool IsFlagAllowed(const std::string& k)
 /* FPS-intent placeholder: DFIntTaskSchedulerTargetFps is NOT on the official
    allowlist (sources conflict; Bloxstrap guides claim it works, the
    announcement list omits it). Writing it costs nothing when ignored and
-   applies automatically if re-allowed — so the farm presets keep it as a
+   applies automatically if re-allowed - so the farm presets keep it as a
    zero-cost placeholder, but it is NOT counted as an alive flag. */
 static bool IsFpsPlaceholder(const std::string& k)
 {
@@ -106,7 +106,7 @@ static const char* SuggestReplacement(const std::string& k)
     if (k.find("Telemetry") != std::string::npos) return "Telemetry flags are blocked; ETW suppression (TASX [ETW] section) still works OS-side";
     if (k.find("PhysicsReplication") != std::string::npos) return "Physics follows frame rate engine-side; no flag needed";
     if (k == "DFIntCSGLevelOfDetail") return "Use DFIntCSGLevelOfDetailSwitchingDistance*=75-150 instead";
-    return "not on Roblox allowlist (18 keys); ignored by client — remove flag";
+    return "not on Roblox allowlist (18 keys); ignored by client - remove flag";
 }
 
 /* ClientAppSettings.json is a flat string->string object; the parser below
@@ -179,7 +179,7 @@ struct FlagPlan {
 };
 
 /* Stable identity of (file state, plan): stat failures are uniformly
-   ignored (treated as "unknown — must read"), never as errors. */
+   ignored (treated as "unknown - must read"), never as errors. */
 bool FileKey(const std::wstring& jsonPath, unsigned long long planHash,
              unsigned long long& outKey)
 {
@@ -203,7 +203,7 @@ void BuildFlagPlan(FlagPlan& plan)
                 LOGW("[FFlags] Unknown/dead flag '%s' skipped (%s)", k, SuggestReplacement(k));
             return;
         }
-        // graphics ownership check inside setSafe via caller context — handled externally for preset,
+        // graphics ownership check inside setSafe via caller context - handled externally for preset,
         // but for manual overrides we also check
         plan.set[k] = v;
     };
@@ -277,15 +277,15 @@ void BuildFlagPlan(FlagPlan& plan)
         if (canWriteGraphics()) {
             setSafe("DFIntTaskSchedulerTargetFps", std::to_string(farmFps));
             setSafe("FFlagTaskSchedulerLimitTargetFpsTo2402", "False");
-            // Renderer D3D11 — the only potato backend on the allowlist
+            // Renderer D3D11 - the only potato backend on the allowlist
             // (D3D10/FL10 override is dead; Vulkan kept off the farm)
             remove({ "FFlagDebugGraphicsPreferVulkan","FFlagDebugGraphicsPreferD3D11","FFlagDebugGraphicsPreferOpenGL","FFlagDebugGraphicsPreferD3D11FL10","FFlagDebugGraphicsDisableDirect3D11" });
             setSafe("FFlagDebugGraphicsPreferD3D11", "True");
-            // Lighting: voxel forcing is dead — pause voxelizer + gray sky
+            // Lighting: voxel forcing is dead - pause voxelizer + gray sky
             remove({ "DFFlagDebugRenderForceTechnologyVoxel","FFlagDebugForceFutureIsBrightPhase2","FFlagDebugForceFutureIsBrightPhase3" });
             setSafe("DFFlagDebugPauseVoxelizer", "True");
             setSafe("FFlagDebugSkyGray", "True");
-            // Texture 0 — full potato (alive)
+            // Texture 0 - full potato (alive)
             remove({ "DFFlagTextureQualityOverrideEnabled","DFIntTextureQualityOverride","DFIntDebugFRMQualityLevelOverride" });
             setSafe("DFFlagTextureQualityOverrideEnabled", "True");
             setSafe("DFIntTextureQualityOverride", "0");
@@ -340,7 +340,7 @@ void BuildFlagPlan(FlagPlan& plan)
         }
 
     } else {
-        // No preset (legacy path) — respect [Roblox] section for backward compat.
+        // No preset (legacy path) - respect [Roblox] section for backward compat.
         // Only allowlisted flags are written; dead values get a replacement hint.
         if (canWriteGraphics()) {
             if (config_get_bool("Roblox", "UncapFps", 1)) {
@@ -360,7 +360,7 @@ void BuildFlagPlan(FlagPlan& plan)
                 else if (renderer == "D3D11") setSafe("FFlagDebugGraphicsPreferD3D11", "True");
                 else if (renderer == "D3D10") {
                     if (LogRateLimit("fflags-d3d10-dead", 3600))
-                        LOGW("[FFlags] Renderer=D3D10 is not allowlisted by Roblox — falling back to D3D11 (alive)");
+                        LOGW("[FFlags] Renderer=D3D10 is not allowlisted by Roblox - falling back to D3D11 (alive)");
                     setSafe("FFlagDebugGraphicsPreferD3D11", "True");
                 }
                 else if (renderer == "OpenGL") setSafe("FFlagDebugGraphicsPreferOpenGL", "True");
@@ -370,13 +370,13 @@ void BuildFlagPlan(FlagPlan& plan)
                 remove({ "DFFlagDebugRenderForceTechnologyVoxel","FFlagDebugForceFutureIsBrightPhase2","FFlagDebugForceFutureIsBrightPhase3" });
                 if (lighting == "Voxel") {
                     if (LogRateLimit("fflags-voxel-dead", 3600))
-                        LOGW("[FFlags] Lighting=Voxel forcing is not allowlisted — using PauseVoxelizer+SkyGray instead");
+                        LOGW("[FFlags] Lighting=Voxel forcing is not allowlisted - using PauseVoxelizer+SkyGray instead");
                     setSafe("DFFlagDebugPauseVoxelizer", "True");
                     setSafe("FFlagDebugSkyGray", "True");
                 }
                 else if (lighting == "ShadowMap" || lighting == "Future") {
                     if (LogRateLimit("fflags-hiqual-dead", 3600))
-                        LOGW("[FFlags] Lighting=%s is not allowlisted and anti-potato — ignored", lighting.c_str());
+                        LOGW("[FFlags] Lighting=%s is not allowlisted and anti-potato - ignored", lighting.c_str());
                 }
             }
             std::string tex = config_get_str("Roblox", "TextureQuality", "Auto");
@@ -391,7 +391,7 @@ void BuildFlagPlan(FlagPlan& plan)
         }
     }
 
-    // Manual overrides from [FastFlags] (key=value on top of preset) — respects allowlist & graphics gate
+    // Manual overrides from [FastFlags] (key=value on top of preset) - respects allowlist & graphics gate
     {
         int cnt = config_get_entry_count();
         for (int i = 0; i < cnt; ++i) {
@@ -407,6 +407,7 @@ void BuildFlagPlan(FlagPlan& plan)
             if (strcmp(klow,"preset")==0) continue;
             if (strcmp(klow,"injectorownsgraphics")==0) continue;
             if (strcmp(klow,"forcegraphicsflags")==0) continue;
+            if (strcmp(klow,"fflagsprunedead")==0) continue;
             // graphics gate
             if (IsGraphicsFlag(key) && !canWriteGraphics()) {
                 if (LogRateLimit("fflags-graphics-skip", 60))
@@ -441,7 +442,7 @@ void BuildFlagPlan(FlagPlan& plan)
                 LOGW("[FFlags] Anti-flag: DFIntDebugFRMQualityLevelOverride forced to 0");
             it2->second = "0";
         }
-        // MSAA above minimum and grass above zero are quality-raising — force down.
+        // MSAA above minimum and grass above zero are quality-raising - force down.
         auto it3 = plan.set.find("FIntDebugForceMSAASamples");
         if (it3 != plan.set.end() && it3->second != "0" && it3->second != "1") {
             if (LogRateLimit("fflags-antimsaa", 60))
@@ -457,12 +458,12 @@ void BuildFlagPlan(FlagPlan& plan)
     }
 
     /* Telemetry JSON flags are BLOCKED by the Roblox allowlist (ignored by
-       the client) — not written. Telemetry suppression stays OS-side via the
+       the client) - not written. Telemetry suppression stays OS-side via the
        [ETW] section (tasx_etw_disable_provider). Nothing to do here. */
 
     // Dead-key cleanup (user approved): erase pre-allowlist leftovers so the
     // JSON doesn't rot with ignored entries. Runs ONLY when TASX owns
-    // graphics — never fight the injector (it would re-add its keys and the
+    // graphics - never fight the injector (it would re-add its keys and the
     // two writers would churn the file back and forth).
     // Default ON for strict farm presets, OFF otherwise.
     {
@@ -473,7 +474,7 @@ void BuildFlagPlan(FlagPlan& plan)
                            config_get_bool("FastFlags", "FFlagsPruneDead", 0))
                         : isStrictFarm;
         // NOTE: when the key exists in only one section the other section's
-        // default must not force it on — re-evaluate strictly.
+        // default must not force it on - re-evaluate strictly.
         const char* p1 = config_get_str("TASX", "FFlagsPruneDead", nullptr);
         const char* p2 = config_get_str("FastFlags", "FFlagsPruneDead", nullptr);
         if (p1 && !p2) prune = config_get_bool("TASX", "FFlagsPruneDead", 0) != 0;
@@ -518,7 +519,7 @@ bool ApplyToVersion(const std::wstring& versionDir, const FlagPlan& plan)
     std::wstring jsonPath = clientDir + L"\\ClientAppSettings.json";
 
     // mtime+size pre-check: skip the read entirely when neither the file
-    // nor our plan changed since the last pass (farm spawns 100 clients —
+    // nor our plan changed since the last pass (farm spawns 100 clients -
     // re-reading every JSON on every spawn is pure I/O waste).
     static std::unordered_map<std::wstring, unsigned long long> s_fileCache;
     unsigned long long planHash = 1469598103934665603ull; // FNV-1a
@@ -574,7 +575,7 @@ bool ApplyToVersion(const std::wstring& versionDir, const FlagPlan& plan)
                      MOVEFILE_REPLACE_EXISTING)) {
         DWORD err = GetLastError();
         DeleteFileW(tmpPath.c_str());
-        // Deleted/locked version dir during Roblox update — not fatal.
+        // Deleted/locked version dir during Roblox update - not fatal.
         if (LogRateLimit("fflags-movefail", 60))
             LOGW("[FFlags] Skip %s (locked/removed, err %lu)",
                  WideToUtf8(versionDir).c_str(), (unsigned long)err);
@@ -613,7 +614,7 @@ void ScanVersionsRoot(const std::wstring& root, const FlagPlan& plan,
 
     WIN32_FIND_DATAW fd{};
     HANDLE find = FindFirstFileW((root + L"\\*").c_str(), &fd);
-    if (find == INVALID_HANDLE_VALUE) return; // removed/unavailable root — not fatal
+    if (find == INVALID_HANDLE_VALUE) return; // removed/unavailable root - not fatal
 
     do {
         if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
@@ -632,7 +633,7 @@ void ScanVersionsRoot(const std::wstring& root, const FlagPlan& plan,
     FindClose(find);
 }
 
-/* File-level dirty tracking (P0 debounce) — outside namespace */
+/* File-level dirty tracking (P0 debounce) - outside namespace */
 static ULONGLONG s_lastFFlagsMs = 0;
 static int s_fflagsDirty = 0;
 
@@ -676,10 +677,10 @@ void FFlagsApply()
                  config_get_bool("FastFlags", "ForceGraphicsFlags", 0);
     if (inj && !force) {
         if (LogRateLimit("fflags-injector", 3600))
-            LOGI("[FFlags] InjectorOwnsGraphics=1 (ForceGraphicsFlags=0) — graphics flags skipped, alive non-graphics still applied");
+            LOGI("[FFlags] InjectorOwnsGraphics=1 (ForceGraphicsFlags=0) - graphics flags skipped, alive non-graphics still applied");
     } else if (inj && force) {
         if (LogRateLimit("fflags-force", 3600))
-            LOGI("[FFlags] ForceGraphicsFlags=1 — injector graphics ownership overridden, all flags applied");
+            LOGI("[FFlags] ForceGraphicsFlags=1 - injector graphics ownership overridden, all flags applied");
     }
     FlagPlan plan;
     BuildFlagPlan(plan);

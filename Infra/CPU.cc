@@ -8,6 +8,7 @@
 
 #include <iostream>
 #include <psapi.h>
+#include <vector>
 
 #ifdef _MSC_VER
 #pragma comment(lib, "PowrProf.lib")
@@ -104,6 +105,92 @@ void CpuSetBoostMode(int enable)
     FreeLibrary(hPowrProf);
 }
 
+unsigned long CpuBackgroundMemPrio(void)
+{
+    const char* v = config_get_str("TASX", "BackgroundMemPriority", nullptr);
+    if (v) {
+        int p = config_get_int("TASX", "BackgroundMemPriority", 1);
+        if (p < 1) p = 1;
+        if (p > 5) p = 5;
+        return (unsigned long)p;
+    }
+    const char* pPre = config_get_str("FastFlags", "Preset", nullptr);
+    if (!pPre) pPre = config_get_str("TASX", "Preset", nullptr);
+    if (pPre) {
+        char pl[16] = {};
+        size_t pn = 0;
+        for (; pPre[pn] && pn + 1 < sizeof(pl); ++pn) {
+            char c = pPre[pn];
+            if (c >= 'A' && c <= 'Z') c = (char)(c + ('a' - 'A'));
+            pl[pn] = c;
+        }
+        if (strcmp(pl, "farm15") == 0 || strcmp(pl, "farm20") == 0 ||
+            strcmp(pl, "farm30") == 0)
+            return 2ul;
+    }
+    return 1ul;
+}
+
+bool CpuPageInProcess(HANDLE hProcess, CpuPageInStats* stats)
+{
+    if (!stats || !hProcess || hProcess == INVALID_HANDLE_VALUE) return false;
+    *stats = {};
+    SYSTEM_INFO si{}; GetNativeSystemInfo(&si);
+    const SIZE_T page = si.dwPageSize ? si.dwPageSize : 4096;
+    std::vector<unsigned char> buffer(256 * 1024);
+    MEMORY_BASIC_INFORMATION mbi{};
+    uintptr_t base = 0;
+    while (true) {
+        SIZE_T queried = VirtualQueryEx(hProcess, (LPCVOID)base, &mbi, sizeof(mbi));
+        if (!queried) break;
+        uintptr_t regionBase = (uintptr_t)mbi.BaseAddress;
+        uintptr_t regionEnd = regionBase + (uintptr_t)mbi.RegionSize;
+        if (regionEnd < regionBase || regionEnd <= regionBase) { base = regionEnd; continue; }
+        if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE) {
+            DWORD p = mbi.Protect & 0xFF;
+            bool readable = (p != PAGE_NOACCESS && p != PAGE_GUARD);
+            if (readable) {
+                uintptr_t start = (regionBase + page - 1) & ~(uintptr_t)(page - 1);
+                if (start < regionEnd) {
+                    SIZE_T totalPages = (SIZE_T)((regionEnd - start + page - 1) / page);
+                    stats->attemptedPages += totalPages;
+                    for (uintptr_t pos = start; pos < regionEnd; ) {
+                        SIZE_T req = (SIZE_T)std::min<ULONGLONG>(256ULL * 1024, (ULONGLONG)(regionEnd - pos));
+                        SIZE_T got = 0;
+                        if (ReadProcessMemory(hProcess, (LPCVOID)pos, buffer.data(), req, &got)) {
+                            SIZE_T pages = got / page;
+                            stats->touchedPages += pages;
+                            stats->bytesTouched += got;
+                            if (got < req) {
+                                uintptr_t fb = pos + pages * page;
+                                for (; fb < pos + req; fb += page) {
+                                    unsigned char b = 0; SIZE_T one = 0;
+                                    if (ReadProcessMemory(hProcess, (LPCVOID)fb, &b, 1, &one) && one) {
+                                        stats->touchedPages += 1; stats->bytesTouched += 1;
+                                    } else {
+                                        stats->failedPages += 1;
+                                    }
+                                }
+                            }
+                        } else {
+                            SIZE_T pagesInReq = (SIZE_T)((req + page - 1) / page);
+                            stats->failedPages += pagesInReq;
+                        }
+                        pos += req;
+                    }
+                }
+            } else {
+                uintptr_t start = (regionBase + page - 1) & ~(uintptr_t)(page - 1);
+                if (start < regionEnd) {
+                    stats->skippedPages += (SIZE_T)((regionEnd - start + page - 1) / page);
+                }
+            }
+        }
+        base = regionEnd;
+    }
+    return true;
+}
+
 bool CpuApplyFocusProfile(HANDLE hProcess, int focused)
 {
     if (!hProcess || hProcess == INVALID_HANDLE_VALUE) return false;
@@ -120,7 +207,7 @@ bool CpuApplyFocusProfile(HANDLE hProcess, int focused)
             LOGW("[TASX] PID %lu HIGH priority failed | Code: %lu", pid,
                  (unsigned long)GetLastError());
 
-        DWORD_PTR target = pMask ? pMask : allMask;
+        DWORD_PTR target = allMask;
         if (target && !SetProcessAffinityMask(hProcess, target))
             LOGW("[TASX] PID %lu p-core affinity failed | Code: %lu", pid,
                  (unsigned long)GetLastError());
@@ -139,52 +226,17 @@ bool CpuApplyFocusProfile(HANDLE hProcess, int focused)
         LOGW("[TASX] PID %lu IDLE priority failed | Code: %lu", pid,
              (unsigned long)GetLastError());
 
-    if (config_get_bool("TASX", "PinBackgroundToECores", 1)) {
-        DWORD_PTR bgMask = eMask ? eMask : allMask;
-        if (bgMask) {
-            if (SetProcessAffinityMask(hProcess, bgMask))
-                LOGI("[TASX] PID %lu pinned to %u background (E-)cores", pid,
-                     PopCount((unsigned long long)bgMask));
-            else
-                LOGW("[TASX] PID %lu affinity failed | Code: %lu", pid,
-                     (unsigned long)GetLastError());
-        }
-    }
+    DWORD_PTR bgMask = allMask;
+    if (bgMask) SetProcessAffinityMask(hProcess, bgMask);
 
-    /* Efficiency mode: process-level EcoQoS only (no per-thread enumeration). */
-    tasx_process_power_throttling(hProcess, 1);
+    /* Always P+E cores, no E-core pinning; keep background scheduling but
+       disable EcoQoS/throttling so all cores are usable. */
+    tasx_process_power_throttling(hProcess, 0);
 
     tasx_set_io_priority(hProcess, 0 /* VeryLow */);
-    // Farm keep-hot: Low(2) instead of VeryLow(1) so the OS is less eager
-    // to evict working farm clients. Default follows the farm preset.
-    unsigned long bgMemPrio = 1;
-    {
-        const char* v = config_get_str("TASX", "BackgroundMemPriority", nullptr);
-        if (v) {
-            int p = config_get_int("TASX", "BackgroundMemPriority", 1);
-            if (p < 1) p = 1;
-            if (p > 5) p = 5;
-            bgMemPrio = (unsigned long)p;
-        } else {
-            const char* pPre = config_get_str("FastFlags", "Preset", nullptr);
-            if (!pPre) pPre = config_get_str("TASX", "Preset", nullptr);
-            if (pPre) {
-                char pl[16] = {};
-                size_t pn = 0;
-                for (; pPre[pn] && pn + 1 < sizeof(pl); ++pn) {
-                    char c = pPre[pn];
-                    if (c >= 'A' && c <= 'Z') c = (char)(c + ('a' - 'A'));
-                    pl[pn] = c;
-                }
-                if (strcmp(pl, "farm15") == 0 || strcmp(pl, "farm20") == 0 ||
-                    strcmp(pl, "farm30") == 0)
-                    bgMemPrio = 2;
-            }
-        }
-    }
-    tasx_set_memory_priority(hProcess, bgMemPrio);
+    tasx_set_memory_priority(hProcess, CpuBackgroundMemPrio());
 
-    LOGI("[TASX] PID %lu -> BACKGROUND profile (IDLE, EcoQoS, E-cores, low I/O+mem)",
+    LOGI("[TASX] PID %lu -> BACKGROUND profile (IDLE, all cores, low I/O+mem)",
          pid);
     return true;
 }

@@ -19,6 +19,9 @@ void StopAllTrimmers();
 /* PID of the currently focused Roblox instance (0 = none focused). */
 void TrimmerSetFocused(DWORD pid);
 
+/* Page-in hotkey: nonzero suspends ALL trimming during page-in pass. */
+void TrimmerSetPageInPause(int on);
+
 /* Aggressive pass over background clients (used by the low-memory
    reactor): soft for recently unfocused, hard only for long-inactive,
    skip below threshold, focused never touched. */

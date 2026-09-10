@@ -18,6 +18,7 @@
 #include "CPU.h"
 #include "trimmer.h"
 #include "winhook.h"
+#include "hotkey.h"
 #include "config.h"
 #include "ntsys.h"
 #include "tweaks.h"
@@ -35,14 +36,14 @@
 #include <unordered_set>
 
 /* ------------------------------------------------------------------ */
-/* Event core — WMI, job completion port, foreground hook and the       */
+/* Event core - WMI, job completion port, foreground hook and the       */
 /* low-memory reactor all feed one single-consumer loop, so process     */
 /* state is touched by the main thread only.                            */
 /* ------------------------------------------------------------------ */
 
 namespace {
 
-enum class Ev { RobloxCreated, RobloxExited, JobChild, Focus, LowMem, ConfigChanged };
+enum class Ev { RobloxCreated, RobloxExited, JobChild, Focus, LowMem, ConfigChanged, HotkeyBoost };
 
 struct Event {
     Ev    kind;
@@ -92,6 +93,11 @@ void WinHook::NotifyFocusChanged()
     PushEvent({Ev::Focus, 0});
 }
 
+void TasxNotifyHotkey()
+{
+    PushEvent({Ev::HotkeyBoost, 0});
+}
+
 /* ------------------------------------------------------------------ */
 /* Roblox instance bookkeeping                                          */
 /* ------------------------------------------------------------------ */
@@ -106,7 +112,9 @@ std::unordered_map<DWORD, HANDLE> g_waitHandles; // RegisterWait handles
    threads); dropped silently if the process exits first. */
 std::unordered_map<DWORD, ULONGLONG> g_retryBlocked;
 DWORD g_appliedFocus = 0; /* PID currently running the focused profile */
+bool g_pageInBusy = false;
 WinHook* g_hook = nullptr;
+FarmHotkey* g_hotkey = nullptr;
 HANDLE g_singleInstanceMutex = nullptr;
 bool g_wmiOk = false;
 
@@ -122,6 +130,7 @@ ULONGLONG g_lastIniCheckMs = 0;
 /* Forward: defined below, used by RetryBlockedHooks. */
 void ApplyFocusIfChanged();
 void TimerOn();
+void TimerOffIfFarmNoFocus();
 
 BOOL WINAPI CtrlHandler(DWORD type)
 {
@@ -207,7 +216,7 @@ void HookClient(DWORD pid)
     int curPct = tasx_get_commit_percent();
     if (curPct >= 0 && curPct >= blockPct) {
         if (!g_retryBlocked.count(pid) && LogRateLimit("commit-block", 60))
-            LOGW("[TASX] Commit charge %d%%, spawn of PID %lu deferred (threshold %d%%) — retry in ~5s",
+            LOGW("[TASX] Commit charge %d%%, spawn of PID %lu deferred (threshold %d%%) - retry in ~5s",
                  curPct, pid, blockPct);
         g_retryBlocked[pid] = GetTickCount64() + 5000;
         return;
@@ -215,7 +224,8 @@ void HookClient(DWORD pid)
 
     HANDLE hProc = OpenProcess(
         PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA |
-        PROCESS_SET_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE,
+        PROCESS_SET_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE |
+        PROCESS_VM_READ,
         FALSE, pid);
     if (!hProc) {
         LOGW("[TASX] Failed to open PID %lu", pid);
@@ -229,7 +239,7 @@ void HookClient(DWORD pid)
 
     bool inJob = JobHookProcess(pid, hProc);
     if (inJob) {
-        tasx_process_power_throttling(hProc, 1);
+        tasx_process_power_throttling(hProc, 0); // always P+E, no EcoQoS
         tasx_set_io_priority(hProc, 0);
         tasx_set_memory_priority(hProc, 1);
         LOGI("[TASX] New Roblox instance PID %lu hooked (job-tracked)", pid);
@@ -240,7 +250,6 @@ void HookClient(DWORD pid)
     }
 
     StartTrimmer(pid, hProc);
-
     WarmClientFilesAsync(pid);
 }
 
@@ -270,7 +279,7 @@ void RetryBlockedHooks()
             continue;
         HANDLE probe = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
         if (!probe)
-            continue; /* exited while deferred — silent drop */
+            continue; /* exited while deferred - silent drop */
         CloseHandle(probe);
         if (curPct >= 0 && curPct >= blockPct) {
             g_retryBlocked[pid] = now + 5000; /* still choking, stay queued */
@@ -308,7 +317,7 @@ void ReleaseClient(DWORD pid, bool logExit)
     if (g_appliedFocus == pid) {
         g_appliedFocus = 0;
         TrimmerSetFocused(0);
-        // The PID is dead — its WASAPI sessions are already gone.
+        // The PID is dead - its WASAPI sessions are already gone.
         // No audio API call; just drop focus/mute bookkeeping (above).
     }
 }
@@ -397,7 +406,7 @@ void UpdateWorkingSetCache()
 }
 
 /* Farm RAM budget honesty check: keep-hot is physically impossible when the
-   farm working set alone exceeds ~75% of installed RAM — paging is then
+   farm working set alone exceeds ~75% of installed RAM - paging is then
    inevitable and the log should say so instead of silently trimming. */
 static void FarmBudgetCheck()
 {
@@ -410,7 +419,7 @@ static void FarmBudgetCheck()
         if (LogRateLimit("farm-budget", 600)) {
             double farmGB = (double)g_farmWsBytes / (1ull << 30);
             double totalGB = (double)ms.ullTotalPhys / (1ull << 30);
-            LOGW("[TASX] WARNING: farm WS %.1f/%.1f GB RAM (>75%%) — keep-hot impossible, paging inevitable: reduce client count or add RAM",
+            LOGW("[TASX] WARNING: farm WS %.1f/%.1f GB RAM (>75%%) - keep-hot impossible, paging inevitable: reduce client count or add RAM",
                  farmGB, totalGB);
         }
     }
@@ -448,7 +457,7 @@ void ApplyFocusIfChanged()
     static bool s_hasPending = false;
 
     if (candidate == g_appliedFocus) {
-        // stable state — clear pending (no switch needed)
+        // stable state - clear pending (no switch needed)
         s_hasPending = false;
     } else if (g_appliedFocus == 0 && candidate != 0) {
         // Legacy bypass restored: very first focus after startup is instant
@@ -464,7 +473,7 @@ void ApplyFocusIfChanged()
             // dwell elapsed -> commit
             s_hasPending = false;
         } else if (s_hasPending && s_pendingPid != candidate) {
-            // flap: candidate changed again before dwell elapsed — coalesce, restart dwell
+            // flap: candidate changed again before dwell elapsed - coalesce, restart dwell
             s_pendingPid = candidate;
             s_pendingSince = now;
             return;
@@ -475,8 +484,9 @@ void ApplyFocusIfChanged()
             return;
         }
     }
-    // dwell satisfied — proceed to apply candidate (which equals isRoblox?pid:0)
+    // dwell satisfied - proceed to apply candidate (which equals isRoblox?pid:0)
 
+    // Focus changes use all-cores profile (always P+E)
     if (isRoblox && g_appliedFocus != pid)
     {
         DWORD oldFocus = g_appliedFocus;
@@ -499,9 +509,7 @@ void ApplyFocusIfChanged()
         AudioUnmuteByPid(pid);
         TrimmerSetFocused(pid);
         g_appliedFocus = pid;
-        // NOTE: no UpdateWorkingSetCache() here — the 10s periodic refresh
-        // covers it. A full NtQuerySystemInformation scan on every focus
-        // switch is a syscall storm during fast Alt-Tab.
+        TimerOn();
     }
     else if (!isRoblox && g_appliedFocus)
     {
@@ -515,16 +523,90 @@ void ApplyFocusIfChanged()
         }
         TrimmerSetFocused(0);
         g_appliedFocus = 0;
+        TimerOffIfFarmNoFocus();
     }
 
     // Rewrite the dynamic job profile only when the focus STATE
     // (focused / not focused) actually changed, not on every 250 ms tick.
+    // FarmBoost counts as focused (farm runs all-cores, rate-cap policy flips).
     static int lastAppliedFocusState = -1;
     int currentState = (g_appliedFocus != 0) ? 1 : 0;
     if (currentState != lastAppliedFocusState) {
         JobsRefreshDynamic(currentState);
         lastAppliedFocusState = currentState;
     }
+}
+
+/* Page-in hotkey: pull all tracked clients out of pagefile.
+   Always keeps P+E affinity; never changes CPU profile or trims. */
+/* Parallel page-in (4 workers) for speed; aggregate stats. */
+struct PageInWorkerCtx {
+    HANDLE h;
+    CpuPageInStats st{};
+};
+
+static DWORD WINAPI PageInWorker(LPVOID arg)
+{
+    auto* ctx = static_cast<PageInWorkerCtx*>(arg);
+    CpuPageInProcess(ctx->h, &ctx->st);
+    return 0;
+}
+
+void PageInFarm()
+{
+    if (g_pageInBusy) {
+        LOGI("[TASX] Page-in already running (hotkey ignored)");
+        return;
+    }
+    g_pageInBusy = true;
+    TrimmerSetPageInPause(1);
+    ULONGLONG t0 = GetTickCount64();
+
+    std::vector<std::pair<DWORD, HANDLE>> clients;
+    for (auto& kv : g_rbxHandles) clients.push_back({kv.first, kv.second});
+
+    std::vector<PageInWorkerCtx> ctxs; ctxs.reserve(clients.size());
+    std::vector<HANDLE> threads; threads.reserve(clients.size());
+    for (auto& p : clients) {
+        HANDLE dup = nullptr;
+        DuplicateHandle(GetCurrentProcess(), p.second, GetCurrentProcess(), &dup, 0, FALSE, DUPLICATE_SAME_ACCESS);
+        ctxs.push_back({dup ? dup : p.second, {}});
+    }
+
+    for (size_t i = 0; i < ctxs.size(); ++i) {
+        HANDLE th = CreateThread(nullptr, 0, PageInWorker, &ctxs[i], 0, nullptr);
+        if (th) threads.push_back(th);
+    }
+
+    for (HANDLE th : threads) { WaitForSingleObject(th, 60000); CloseHandle(th); }
+
+    unsigned clientsDone = 0;
+    unsigned long long totalAttempted = 0, totalTouched = 0, totalFailed = 0, totalBytes = 0;
+    for (size_t i = 0; i < clients.size(); ++i) {
+        if (ctxs[i].h) {
+            clientsDone++;
+            totalAttempted += ctxs[i].st.attemptedPages;
+            totalTouched += ctxs[i].st.touchedPages;
+            totalFailed += ctxs[i].st.failedPages;
+            totalBytes += ctxs[i].st.bytesTouched;
+            if (clients[i].first) LOGI("[TASX] Page-in PID %lu: %llu pages touched, %llu failed | ~%llu KB",
+                clients[i].first,
+                (unsigned long long)ctxs[i].st.touchedPages,
+                (unsigned long long)ctxs[i].st.failedPages,
+                (unsigned long long)(ctxs[i].st.bytesTouched >> 10));
+            if (ctxs[i].h != clients[i].second) CloseHandle(ctxs[i].h);
+        }
+    }
+
+    ULONGLONG t1 = GetTickCount64();
+    TrimmerSetPageInPause(0);
+    g_pageInBusy = false;
+    LOGI("[TASX] Page-in complete (%lu ms): %u clients | %llu pages attempted, %llu touched, %llu failed | ~%llu MB fetched",
+         (unsigned long)(t1 - t0), clientsDone,
+         (unsigned long long)totalAttempted,
+         (unsigned long long)totalTouched,
+         (unsigned long long)totalFailed,
+         (unsigned long long)(totalBytes >> 20));
 }
 
 /* Timer resolution: 0.5 ms tick while Roblox is running -> smoother frame
@@ -643,7 +725,7 @@ void LowMemReactorStart()
             return 0;
         }
         // The notification is manual-reset and stays signaled while memory
-        // is low — debounce so the event queue is not flooded.
+        // is low - debounce so the event queue is not flooded.
         while (true) {
             if (WaitForSingleObject(hLow, INFINITE) != WAIT_OBJECT_0) break;
             PushEvent({Ev::LowMem, 0});
@@ -740,7 +822,7 @@ static void CheckPagefileWarning(const char* tag)
             }
             double f = (double)freeBytes.QuadPart / (1ull<<30);
             double t = (double)totalBytes.QuadPart / (1ull<<30);
-            LOGW("[TASX] WARNING: Pagefile volume %s low free %.1f/%.1f GB (< %d GB) — увеличьте/перенесите файл подкачки: Система -> Доп.параметры -> Быстродействие -> Дополнительно -> Виртуальная память", driveA, f, t, threshGB);
+            LOGW("[TASX] WARNING: Pagefile volume %s low free %.1f/%.1f GB (< %d GB) - enlarge/move the pagefile: System -> Advanced settings -> Performance -> Advanced -> Virtual memory", driveA, f, t, threshGB);
         }
     }
 }
@@ -751,7 +833,7 @@ void HandleRobloxCreated(DWORD pid)
     bool isNew = !g_rbxHandles.count(pid);
     HookClient(pid);
     if (g_rbxHandles.count(pid))
-        g_retryBlocked.erase(pid); /* hooked (possibly via retry) — dequeue */
+        g_retryBlocked.erase(pid); /* hooked (possibly via retry) - dequeue */
     ApplyFocusIfChanged(); /* the new instance may already be the foreground */
 
     if (isNew && g_rbxHandles.count(pid)) {
@@ -812,6 +894,7 @@ static void ValidateIniKeys()
         "tasx|disablecpuboost", "tasx|warmclientfiles", "tasx|warmmaxmb",
         "tasx|desktopheapexpand", "tasx|injectorownsgraphics",
         "tasx|forcegraphicsflags", "tasx|preset", "tasx|disabletelemetry",
+        "tasx|boosthotkey", "tasx|farmboostdefault",
         "roblox|uncapfps", "roblox|targetfps", "roblox|renderer",
         "roblox|lighting", "roblox|texturequality",
         "roblox|disabletelemetry", "roblox|extraversionsdirs",
@@ -849,7 +932,7 @@ static void ValidateIniKeys()
             char tag[128];
             snprintf(tag, sizeof(tag), "ini-unknown-%s", low);
             if (LogRateLimit(tag, 3600))
-                LOGW("[TASX] WARNING: unknown ini key [%s] %s — typo? ignored, default applies",
+                LOGW("[TASX] WARNING: unknown ini key [%s] %s - typo? ignored, default applies",
                      sec, key);
         }
     }
@@ -876,7 +959,7 @@ int InitSubsystems()
                        tasx_log_level_from_str(config_get_str("Log", "LogLevel", "info")));
     g_iniMtime = IniMtimeKey();
     if (!config_loaded()) {
-        LOGW("[TASX] WARNING: TASX.ini не найден — работают встроенные дефолты. Ожидаемый путь: %s", g_iniPath);
+        LOGW("[TASX] WARNING: TASX.ini not found - built-in defaults apply. Expected path: %s", g_iniPath);
         if (config_create_default(g_iniPath))
             LOGI("[TASX] Created default TASX.ini at %s", g_iniPath);
     } else {
@@ -919,18 +1002,18 @@ int InitSubsystems()
     bool jobsOk = JobsInit();
 
     // Startup banner: admin status, job mode, enabled/disabled features.
-    // Printed ONCE — replaces the old per-feature "needs admin" spam.
+    // Printed ONCE - replaces the old per-feature "needs admin" spam.
     LOGI("[TASX] Admin: %s | Job mode: %s",
          elevated ? "YES (elevated)" : "NO (limited mode)",
          jobsOk ? "native cgroup + per-process focus" : "per-process fallback");
     if (!elevated) {
-        LOGI("[TASX] Limited mode WITHOUT admin — DISABLED: standby purge, system cleaner, HKLM tweaks, ETW, CPU boost. ENABLED: priority, affinity, FFlags, crash-handler kill, trimmer(soft). Run Install\\ScheduledTaskInstaller.bat for full effect.");
+        LOGI("[TASX] Limited mode WITHOUT admin - DISABLED: standby purge, system cleaner, HKLM tweaks, ETW, CPU boost. ENABLED: priority, affinity, FFlags, crash-handler kill, trimmer(soft). Run Install\\ScheduledTaskInstaller.bat for full effect.");
     } else {
-        LOGI("[TASX] Features: priority, affinity, jobs, FFlags, trimmer, standby purge, system cleaner, HKLM tweaks — all ENABLED");
+        LOGI("[TASX] Features: priority, affinity, jobs, FFlags, trimmer, standby purge, system cleaner, HKLM tweaks - all ENABLED");
     }
 
     // FPS config sanity (single place): UncapFps=1 makes TargetFps
-    // meaningless — the FFlags writer ignores it and uncaps to 999.
+    // meaningless - the FFlags writer ignores it and uncaps to 999.
     if (config_get_bool("Roblox", "UncapFps", 1)) {
         int tf = config_get_int("Roblox", "TargetFps", 999);
         if (tf < 240 && LogRateLimit("fps-conflict", 3600))
@@ -944,6 +1027,9 @@ int InitSubsystems()
     g_hook = new WinHook();
     g_hook->Start();
 
+    g_hotkey = new FarmHotkey();
+    g_hotkey->Start();
+
     LowMemReactorStart();
 
     SweepDiscover();
@@ -955,6 +1041,7 @@ int InitSubsystems()
     g_lastIniCheckMs = now;
     if (!g_rbxHandles.empty()) { TweaksPowerEnter(); TimerOn(); }
 
+    // Page-in hotkey (always P+E); no startup page-in by default.
     LOGI("[TASX] Launched");
     return 1;
 }
@@ -964,6 +1051,8 @@ int InitSubsystems()
 void ShutdownSubsystems()
 {
     LOGI("[TASX] Shutting down...");
+    delete g_hotkey;
+    g_hotkey = nullptr;
     delete g_hook;
     g_hook = nullptr;
     _wmishutdown();
@@ -996,6 +1085,7 @@ int RunTasx()
             case Ev::JobChild:      KillCrashHandlerPid(ev->pid); break;
             case Ev::Focus:         ApplyFocusIfChanged();        break;
             case Ev::ConfigChanged: HandleConfigChanged();        break;
+            case Ev::HotkeyBoost:   PageInFarm();                 break;
             case Ev::LowMem: {
                 static ULONGLONG lastLowMemCleanMs = 0;
                 ULONGLONG now = GetTickCount64();

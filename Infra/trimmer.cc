@@ -1,5 +1,6 @@
 #include "trimmer.h"
 
+#include "CPU.h"
 #include "config.h"
 #include "ntsys.h"
 #include "log.h"
@@ -34,6 +35,7 @@ std::unordered_map<DWORD, SIZE_T> g_wsCache;   /* pid -> last WS bytes (from mas
 std::unordered_map<DWORD, std::int64_t> g_wsTime; /* pid -> cache timestamp ms */
 std::unordered_map<DWORD, std::int64_t> g_unfocusedSince; /* pid -> when lost focus */
 std::atomic<DWORD> g_focusedPid{0};
+std::atomic<int> g_pageInPause{0};
 
 HANDLE g_hThread = nullptr;
 HANDLE g_hStop = nullptr;
@@ -139,12 +141,7 @@ static std::int64_t HardTrimAfterMs()
 
 static unsigned long BgMemPrio()
 {
-    const char* v = config_get_str("TASX", "BackgroundMemPriority", nullptr);
-    if (!v) return IsFarmKeepHot() ? 2ul : 1ul; // Low for farm, VeryLow otherwise
-    int p = config_get_int("TASX", "BackgroundMemPriority", 1);
-    if (p < 1) p = 1;
-    if (p > 5) p = 5;
-    return (unsigned long)p;
+    return CpuBackgroundMemPrio(); // single source of truth lives in CPU.cc
 }
 
 void SoftTrim(HANDLE h)
@@ -230,7 +227,7 @@ DWORD WINAPI SchedulerThread(LPVOID)
         if (!haveDue) continue;
 
         DWORD pid = d.pid;
-        if (g_focusedPid.load() == pid) {
+        if (g_pageInPause.load() || g_focusedPid.load() == pid) {
             std::lock_guard<std::mutex> lk(g_mtx);
             g_heap.push({NowMs() + 3000, pid}); // never fight the player
             g_unfocusedSince.erase(pid);
@@ -311,6 +308,14 @@ DWORD WINAPI SchedulerThread(LPVOID)
         std::int64_t now = NowMs();
         if (now - lastLog >= 30000) {
             std::lock_guard<std::mutex> lk(g_mtx);
+            if (g_handles.empty()) {
+                // No clients: drop stale window counters instead of printing
+                // someone else's stats under "0 client(s)".
+                trimmed = 0;
+                skipped = 0;
+                softOnly = 0;
+                lastLog = now;
+            } else {
             // Farm observability: avg WS + commit in the same line, zero new
             // syscalls (wsCache already here, pressure via 5s TTL snapshot).
             unsigned long long wsSum = 0;
@@ -324,12 +329,19 @@ DWORD WINAPI SchedulerThread(LPVOID)
             trimmed = 0;
             skipped = 0;
             softOnly = 0;
+            } // end else (non-empty): log summary
         }
     }
     return 0;
 }
 
 } // namespace
+
+void TrimmerSetPageInPause(int on)
+{
+    g_pageInPause.store(on ? 1 : 0);
+    if (g_hWake) SetEvent(g_hWake);
+}
 
 void TrimmerSetFocused(DWORD pid)
 {
@@ -419,6 +431,12 @@ void TrimmerTrimAllAggressive()
     // Farm keep-hot: hard only after HardTrimAfterSec; otherwise 2x interval.
     // Below-TrimSkipBelowMB processes are skipped entirely (0 syscalls
     // beyond the cached check). Focused instance is never touched.
+    // FarmBoost ON: the whole farm runs hot — nothing is trimmed at all.
+    if (g_pageInPause.load()) {
+        if (LogRateLimit("trim-pagein", 60))
+            LOGI("[Trimmer] Aggressive skipped (page-in in progress)");
+        return;
+    }
     DWORD focused = g_focusedPid.load();
     int skipMB = config_get_int("TASX", "TrimSkipBelowMB", 250);
     std::int64_t now = NowMs();

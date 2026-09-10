@@ -1,4 +1,4 @@
-/* TASX.ini reader — plain C, no CRT-specific helpers so it builds as C
+/* TASX.ini reader - plain C, no CRT-specific helpers so it builds as C
    with both MSVC and MinGW. */
 #include "config.h"
 
@@ -141,8 +141,9 @@ void config_load(const char* iniPath)
             trim_inplace(key);
             trim_inplace(val);
 
-            // Inline comment strip (quote-aware): only trim after value if
-            // preceded by whitespace and not inside quoted value.
+            // Inline comment strip (quote-aware, not inside quoted value):
+            // '#' always starts a comment; ';' only after whitespace (so
+            // list values like CacheLinks=D:\A;E:\B survive intact).
             char* comment = NULL;
             for (char* c = val; *c; ++c) {
                 if (*c == '"' || *c == '\'') {
@@ -155,7 +156,7 @@ void config_load(const char* iniPath)
                     }
                     continue;
                 }
-                if ((*c == ';' || *c == '#') && (c == val || (c > val && (*(c-1) == ' ' || *(c-1) == '\t')))) {
+                if (*c == '#' || (*c == ';' && (c == val || (c > val && (*(c-1) == ' ' || *(c-1) == '\t'))))) {
                     comment = c;
                     break;
                 }
@@ -312,7 +313,7 @@ int config_create_default(const char* iniPath)
     if (!fp) return 0;
 
     const char* tpl =
-        "; TASX configuration — farm preset for 25-30 clients, FPS cap 20\n"
+        "; TASX configuration - farm preset for 25-30 clients, FPS cap 20\n"
         "; Every key is optional; missing keys use built-in defaults.\n"
         "; Booleans: 1/0 (true/false/on/off also accepted). Hot-reload: ~10s.\n"
         "; Inline comments after values (\"key=val ; comment\") are supported.\n"
@@ -341,8 +342,8 @@ int config_create_default(const char* iniPath)
         "KillOnAgentExit=1\n"
         "CommitBlockThreshold=85\n"
         "MuteBackground=1\n"
-        "PinBackgroundToECores=1\n"
-        "DynamicAffinity=1\n"
+        "PinBackgroundToECores=0\n"
+        "DynamicAffinity=0\n"
         "\n"
         "; Focus stability (anti-flap)\n"
         "; FocusDwellMs: min time a focus state must persist before TASX reacts.\n"
@@ -365,6 +366,11 @@ int config_create_default(const char* iniPath)
         "; Watchdog\n"
         "SelfCpuWatchdogPercent=5\n"
         "\n"
+        "; FarmBoost hotkey (Ctrl+Alt+B): page-in clients from pagefile (always P+E).\n"
+        "; Format: Modifiers+Key (Ctrl/Alt/Shift/Win + A-Z/0-9/F1-F24), off=disabled.\n"
+        "BoostHotkey=Ctrl+Alt+B\n"
+        "FarmBoostDefault=0 ; 1=start with the whole farm hot\n"
+        "\n"
         "; Crash handler + timer + power + tweaks\n"
         "; TimerResolution 0.5ms is auto-disabled on farm presets without focus.\n"
         "KillCrashHandler=1\n"
@@ -381,7 +387,7 @@ int config_create_default(const char* iniPath)
         "ForceGraphicsFlags=0 ; when 1, TASX writes graphics flags even if InjectorOwnsGraphics=1\n"
         "\n"
         "[Roblox]\n"
-        "; Legacy graphics section — kept for compat, overridden by [FastFlags] Preset.\n"
+        "; Legacy graphics section - kept for compat, overridden by [FastFlags] Preset.\n"
         "; For farm: UncapFps=0 + TargetFps=20 caps ALL clients strictly to 20 FPS.\n"
         "UncapFps=0\n"
         "TargetFps=20\n"

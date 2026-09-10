@@ -68,11 +68,11 @@ DWORD_PTR GetBgMaskForCurrentPolicy(int anyFocused)
     unsigned long long eMask = tasx_get_ecore_mask();
     unsigned long long allMask = tasx_get_all_mask();
 
-    if (!config_get_bool("TASX", "DynamicAffinity", 1))
-        return (DWORD_PTR)eMask;
+    if (!config_get_bool("TASX", "DynamicAffinity", 0))
+        return (DWORD_PTR)allMask;
     if (anyFocused)
-        return (DWORD_PTR)eMask;
-    /* farm: nothing focused — all cores, optionally rate-capped */
+        return (DWORD_PTR)allMask;
+    /* farm: nothing focused - all cores, optionally rate-capped */
     return (DWORD_PTR)allMask;
 }
 
@@ -130,7 +130,7 @@ bool ApplyLimitsToJob(HANDLE job, DWORD_PTR bgMask, int cpuCap)
     } else {
         JOBOBJECT_CPU_RATE_CONTROL_INFORMATION crc{};
         crc.ControlFlags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE;
-        crc.CpuRate = 10000; /* 100% — no cap */
+        crc.CpuRate = 10000; /* 100% - no cap */
         SetInformationJobObject(job, JobObjectCpuRateControlInformation,
                                 &crc, sizeof(crc));
     }
@@ -178,7 +178,7 @@ DWORD WINAPI IocpLoop(LPVOID)
         if (code == JOB_OBJECT_MSG_EXIT_PROCESS) {
             TasxNotifyJobEvent(1, pid);
         } else if (code == JOB_OBJECT_MSG_NEW_PROCESS) {
-            /* A job child spawned. Only the crash handler is of interest —
+            /* A job child spawned. Only the crash handler is of interest -
                never forward arbitrary children (would cause kill storms). */
             std::wstring name = QueryProcessNameByPid(pid);
             if (NameHas(name, L"robloxcrashhandler.exe"))
@@ -280,7 +280,7 @@ bool JobHookProcess(DWORD pid, HANDLE hProc)
             if (ShouldLogPerPid("job-force", pid, 300))
                 LOGW("[Jobs] PID %lu assign denied (err %lu, inJob=%d, mode=force) -> per-process fallback (foreign Job without BREAKAWAY_OK)", pid, (unsigned long)err, (int)inJob);
         } else if (err == ERROR_ALREADY_ASSIGNED) {
-            // foreign job without BREAKAWAY_OK — external launcher/manager owns it
+            // foreign job without BREAKAWAY_OK - external launcher/manager owns it
             if (ShouldLogPerPid("job-foreign", pid, 300))
                 LOGW("[Jobs] PID %lu already in foreign job (no BREAKAWAY_OK) -> per-process fallback, no retry", pid);
         } else if (err == ERROR_ACCESS_DENIED) {
@@ -311,7 +311,7 @@ bool JobApplyProfile(DWORD pid, int focused)
        are applied per-process by the caller (CpuApplyFocusProfile).
        Returns true when the process already runs the requested state
        (caller skips all syscalls), false when the caller must apply the
-       per-process profile — and after a cross move there is deliberately
+       per-process profile - and after a cross move there is deliberately
        NO AssignProcessToJobObject: moving between sibling jobs always
        fails with ERROR_ACCESS_DENIED. */
     std::lock_guard<std::mutex> lock(g_mtx);

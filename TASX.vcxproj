@@ -106,7 +106,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;TASX_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <LanguageStandard>stdcpp17</LanguageStandard>
+      <LanguageStandard>stdcpp23</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
     </ClCompile>
     <Link>
@@ -123,7 +123,7 @@
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;TASX_GUI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <LanguageStandard>stdcpp17</LanguageStandard>
+      <LanguageStandard>stdcpp23</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <OmitFramePointers>true</OmitFramePointers>
@@ -153,6 +153,7 @@
     <ClCompile Include="Infra\master.cpp" />
     <ClCompile Include="Infra\trimmer.cc" />
     <ClCompile Include="Infra\winhook.cc" />
+    <ClCompile Include="Infra\hotkey.cc" />
     <ClCompile Include="Infra\WMI.cc" />
     <ClCompile Include="Infra\tweaks.cc" />
     <ClCompile Include="Infra\fflags.cc" />
@@ -175,6 +176,7 @@
     <ClInclude Include="Infra\CPU.h" />
     <ClInclude Include="Infra\trimmer.h" />
     <ClInclude Include="Infra\winhook.h" />
+    <ClInclude Include="Infra\hotkey.h" />
     <ClInclude Include="Infra\WMI.h" />
     <ClInclude Include="Infra\tweaks.h" />
     <ClInclude Include="Infra\fflags.h" />
