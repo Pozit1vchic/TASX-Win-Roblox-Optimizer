@@ -23,6 +23,15 @@ int         config_get_bool(const char* section, const char* key, int defVal);
 /* 1 when the file was parsed successfully. */
 int config_loaded(void);
 
+/* Creates a default TASX.ini with documented values when the file is missing.
+   Returns 1 if created, 0 if already exists or on failure. */
+int config_create_default(const char* iniPath);
+
+/* Enumeration: iterate entries for preset/manual overrides. */
+int config_get_entry_count(void);
+int config_get_entry(int index, char* secOut, int secLen, char* keyOut, int keyLen,
+                     char* valOut, int valLen);
+
 #ifdef __cplusplus
 }
 #endif

@@ -20,6 +20,11 @@ inline bool LogRateLimit(const char* tag, int minIntervalSec)
     auto it = lastCall.find(k);
     if (it != lastCall.end() && (now - it->second) < (std::int64_t)minIntervalSec * 1000)
         return false;  /* rate-limited */
+    // Bound growth: per-PID tags (job-denied-<pid>) churn forever on a
+    // 24/7 farm. 1024 entries is plenty; reset is harmless (a few lines
+    // may print once more right after the reset).
+    if (lastCall.size() >= 1024)
+        lastCall.clear();
     lastCall[k] = now;
     return true;   /* allowed */
 }

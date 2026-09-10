@@ -155,7 +155,34 @@ bool CpuApplyFocusProfile(HANDLE hProcess, int focused)
     tasx_process_power_throttling(hProcess, 1);
 
     tasx_set_io_priority(hProcess, 0 /* VeryLow */);
-    tasx_set_memory_priority(hProcess, 1 /* VeryLow */);
+    // Farm keep-hot: Low(2) instead of VeryLow(1) so the OS is less eager
+    // to evict working farm clients. Default follows the farm preset.
+    unsigned long bgMemPrio = 1;
+    {
+        const char* v = config_get_str("TASX", "BackgroundMemPriority", nullptr);
+        if (v) {
+            int p = config_get_int("TASX", "BackgroundMemPriority", 1);
+            if (p < 1) p = 1;
+            if (p > 5) p = 5;
+            bgMemPrio = (unsigned long)p;
+        } else {
+            const char* pPre = config_get_str("FastFlags", "Preset", nullptr);
+            if (!pPre) pPre = config_get_str("TASX", "Preset", nullptr);
+            if (pPre) {
+                char pl[16] = {};
+                size_t pn = 0;
+                for (; pPre[pn] && pn + 1 < sizeof(pl); ++pn) {
+                    char c = pPre[pn];
+                    if (c >= 'A' && c <= 'Z') c = (char)(c + ('a' - 'A'));
+                    pl[pn] = c;
+                }
+                if (strcmp(pl, "farm15") == 0 || strcmp(pl, "farm20") == 0 ||
+                    strcmp(pl, "farm30") == 0)
+                    bgMemPrio = 2;
+            }
+        }
+    }
+    tasx_set_memory_priority(hProcess, bgMemPrio);
 
     LOGI("[TASX] PID %lu -> BACKGROUND profile (IDLE, EcoQoS, E-cores, low I/O+mem)",
          pid);

@@ -8,8 +8,10 @@
 #include <psapi.h>
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <queue>
 #include <unordered_map>
@@ -53,7 +55,40 @@ std::int64_t ClampInterval(std::int64_t ms)
     return ms;
 }
 
-/* Base interval modulated by system memory pressure. */
+namespace {
+
+/* Shared snapshot of memory pressure with TTL = avoids 20 NT calls per tick.
+   Both trimmer IntervalMs() and master low-mem reactor use this if needed. */
+static std::int64_t g_snapshotMs = 0;
+static int g_snapshotLoad = 50;
+static int g_snapshotCommit = -1;
+static std::mutex g_snapshotMtx;
+
+int GetPressureLoad()
+{
+    std::lock_guard<std::mutex> lk(g_snapshotMtx);
+    std::int64_t now = NowMs();
+    if (now - g_snapshotMs < 5000) return g_snapshotLoad; // TTL 5s
+    MEMORYSTATUSEX ms{}; ms.dwLength = sizeof(ms);
+    if (GlobalMemoryStatusEx(&ms)) g_snapshotLoad = (int)ms.dwMemoryLoad;
+    else g_snapshotLoad = 50;
+    g_snapshotCommit = tasx_get_commit_percent();
+    g_snapshotMs = now;
+    return g_snapshotLoad;
+}
+
+int GetPressureCommit()
+{
+    std::lock_guard<std::mutex> lk(g_snapshotMtx);
+    std::int64_t now = NowMs();
+    if (now - g_snapshotMs < 5000) return g_snapshotCommit;
+    GetPressureLoad(); // refresh
+    return g_snapshotCommit;
+}
+
+} // namespace
+
+/* Base interval modulated by system memory pressure (shared TTL snapshot). */
 std::int64_t IntervalMs()
 {
     std::int64_t base = (std::int64_t)config_get_int("TASX", "TrimIntervalSec", 10) * 1000;
@@ -61,27 +96,63 @@ std::int64_t IntervalMs()
     if (!config_get_bool("TASX", "AdaptiveTrim", 1))
         return ClampInterval(base);
 
-    MEMORYSTATUSEX ms{};
-    ms.dwLength = sizeof(ms);
-    int load = 50;
-    if (GlobalMemoryStatusEx(&ms))
-        load = (int)ms.dwMemoryLoad;
-
+    int load = GetPressureLoad();
     if (load >= 90) return ClampInterval(base / 4);   /* farm is choking RAM */
     if (load >= 75) return ClampInterval(base / 2);
     if (load <= 60) return ClampInterval(base * 2);   /* plenty of headroom */
-    int commitPct = tasx_get_commit_percent();
+    int commitPct = GetPressureCommit();
     if (commitPct >= 80) return ClampInterval(base / 2);
     if (commitPct >= 0 && commitPct < 50) return ClampInterval(base * 2);
     return ClampInterval(base);
 }
 
+/* Farm keep-hot policy: unfocused farm clients are WORKING, not idle.
+   With FarmKeepHot=1 (default on farm* presets) the periodic pass is
+   soft-only; HardTrim (EmptyWorkingSet) fires only after HardTrimAfterSec
+   of continuous unfocus (default 1800s) or on commit-critical (>=90%).
+   The old "hard after 2*interval" (~6-20s) is what evicted whole farms. */
+static bool IsFarmKeepHot()
+{
+    const char* v = config_get_str("TASX", "FarmKeepHot", nullptr);
+    if (v) return config_get_bool("TASX", "FarmKeepHot", 1) != 0;
+    const char* pPre = config_get_str("FastFlags", "Preset", nullptr);
+    if (!pPre) pPre = config_get_str("TASX", "Preset", nullptr);
+    if (pPre) {
+        char pl[16] = {};
+        size_t pn = 0;
+        for (; pPre[pn] && pn + 1 < sizeof(pl); ++pn)
+            pl[pn] = (char)tolower((unsigned char)pPre[pn]);
+        if (strcmp(pl, "farm15") == 0 || strcmp(pl, "farm20") == 0 ||
+            strcmp(pl, "farm30") == 0)
+            return true;
+    }
+    return false;
+}
+
+static std::int64_t HardTrimAfterMs()
+{
+    int s = config_get_int("TASX", "HardTrimAfterSec", 1800);
+    if (s < 60) s = 60;
+    if (s > 86400) s = 86400;
+    return (std::int64_t)s * 1000;
+}
+
+static unsigned long BgMemPrio()
+{
+    const char* v = config_get_str("TASX", "BackgroundMemPriority", nullptr);
+    if (!v) return IsFarmKeepHot() ? 2ul : 1ul; // Low for farm, VeryLow otherwise
+    int p = config_get_int("TASX", "BackgroundMemPriority", 1);
+    if (p < 1) p = 1;
+    if (p > 5) p = 5;
+    return (unsigned long)p;
+}
+
 void SoftTrim(HANDLE h)
 {
-    // VeryLow memory priority + release of the trimmed page cost only.
+    // Background memory priority + release of the trimmed page cost only.
     // Deliberately NO QUOTA_LIMITS_HARDWS_MIN_ENABLE: pinning the current
     // working set as a hard minimum would fight every later trim.
-    tasx_set_memory_priority(h, 1);
+    tasx_set_memory_priority(h, BgMemPrio());
     SetProcessWorkingSetSizeEx(h, (SIZE_T)-1, (SIZE_T)-1, 0);
 }
 
@@ -92,7 +163,7 @@ void HardTrim(HANDLE h)
 
 bool BelowSkipThresholdCached(DWORD pid)
 {
-    int skipMB = config_get_int("TASX", "TrimSkipBelowMB", 150);
+    int skipMB = config_get_int("TASX", "TrimSkipBelowMB", 250);
     if (skipMB <= 0) return false;
 
     auto it = g_wsCache.find(pid);
@@ -198,7 +269,7 @@ DWORD WINAPI SchedulerThread(LPVOID)
                 ++skipped;
                 // no syscall, just count
             } else {
-                // Two-phase logic
+                // Two-phase logic (farm-aware)
                 std::int64_t unfocusedMs = 0;
                 {
                     std::lock_guard<std::mutex> lk(g_mtx);
@@ -211,10 +282,17 @@ DWORD WINAPI SchedulerThread(LPVOID)
                         unfocusedMs = 0;
                     }
                 }
-                std::int64_t interval = IntervalMs();
                 // Soft pass always
                 SoftTrim(h);
-                if (unfocusedMs > 2 * interval) {
+                bool doHard = false;
+                if (IsFarmKeepHot()) {
+                    // farm: hard only after hours-scale inactivity, never on cadence
+                    doHard = (unfocusedMs > HardTrimAfterMs());
+                } else {
+                    std::int64_t interval = IntervalMs();
+                    doHard = (unfocusedMs > 2 * interval);
+                }
+                if (doHard) {
                     HardTrim(h);
                     ++trimmed;
                 } else {
@@ -233,8 +311,15 @@ DWORD WINAPI SchedulerThread(LPVOID)
         std::int64_t now = NowMs();
         if (now - lastLog >= 30000) {
             std::lock_guard<std::mutex> lk(g_mtx);
-            LOGI("[Trimmer] %u client(s), %d hard trimmed, %d soft, %d skipped (30s)",
-                 (unsigned)g_handles.size(), trimmed, softOnly, skipped);
+            // Farm observability: avg WS + commit in the same line, zero new
+            // syscalls (wsCache already here, pressure via 5s TTL snapshot).
+            unsigned long long wsSum = 0;
+            for (auto& kv : g_wsCache) wsSum += (unsigned long long)kv.second;
+            unsigned avgMB = g_wsCache.empty() ? 0
+                : (unsigned)(wsSum / g_wsCache.size() >> 20);
+            int commit = g_snapshotCommit;
+            LOGI("[Trimmer] %u client(s), %d hard trimmed, %d soft, %d skipped (30s) | avg WS %u MB, commit %d%%",
+                 (unsigned)g_handles.size(), trimmed, softOnly, skipped, avgMB, commit);
             lastLog = now;
             trimmed = 0;
             skipped = 0;
@@ -330,14 +415,15 @@ void TrimmerRemoveWorkingSet(DWORD pid)
 
 void TrimmerTrimAllAggressive()
 {
-    // Hard trim ONLY for long-inactive background clients:
-    // unfocused longer than 2x current interval. Everyone else gets soft.
+    // Hard trim ONLY for long-inactive background clients.
+    // Farm keep-hot: hard only after HardTrimAfterSec; otherwise 2x interval.
     // Below-TrimSkipBelowMB processes are skipped entirely (0 syscalls
     // beyond the cached check). Focused instance is never touched.
     DWORD focused = g_focusedPid.load();
-    int skipMB = config_get_int("TASX", "TrimSkipBelowMB", 150);
+    int skipMB = config_get_int("TASX", "TrimSkipBelowMB", 250);
     std::int64_t now = NowMs();
-    std::int64_t interval = IntervalMs();
+    std::int64_t hardAfterMs = IsFarmKeepHot() ? HardTrimAfterMs()
+                                               : 2 * IntervalMs();
     std::vector<HANDLE> soft;
     std::vector<HANDLE> hard;
     {
@@ -352,7 +438,7 @@ void TrimmerTrimAllAggressive()
                 continue; // below threshold, fresh cache: skip
             auto itU = g_unfocusedSince.find(kv.first);
             std::int64_t age = (itU != g_unfocusedSince.end()) ? (now - itU->second) : 0;
-            if (age > 2 * interval)
+            if (age > hardAfterMs)
                 hard.push_back(kv.second);
             else
                 soft.push_back(kv.second);

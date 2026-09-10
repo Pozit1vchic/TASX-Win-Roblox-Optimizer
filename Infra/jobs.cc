@@ -33,6 +33,36 @@ std::unordered_map<DWORD, int> g_pidJob;
 DWORD_PTR g_dynamicBgMask = 0;
 bool      g_bgRateCap = false;
 
+/* JobAssignMode values: auto (default, try assign, sticky fallback on foreign Job),
+   diagnose (same + log InJob info for broken foreign-job diagnostics),
+   off (never assign, pure per-process profile). Deprecated alias: force. */
+int GetJobAssignMode()
+{
+    const char* v = config_get_str("TASX", "JobAssignMode", "auto");
+    if (!v || !*v) v = config_get_str("FastFlags", "JobAssignMode", "auto");
+    char low[16] = {};
+    size_t n = 0;
+    for (; v[n] && n + 1 < sizeof(low); ++n) {
+        char c = v[n];
+        if (c >= 'A' && c <= 'Z') c = (char)(c + ('a' - 'A'));
+        low[n] = c;
+    }
+    low[n] = '\0';
+    if (low[0] == 'o' && (low[1] == 'f' || low[1] == 'f')) return 2; // off
+    if ((low[0] == 'd' && low[1] == 'i') || (low[0] == 'f' && low[1] == 'o')) {
+        // diagnose or deprecated force
+        return 1;
+    }
+    return 0; // auto
+}
+
+bool ShouldLogPerPid(const char* prefix, DWORD pid, int intervalSec)
+{
+    char tag[64];
+    snprintf(tag, sizeof(tag), "%s-%lu", prefix, (unsigned long)pid);
+    return LogRateLimit(tag, intervalSec);
+}
+
 DWORD_PTR GetBgMaskForCurrentPolicy(int anyFocused)
 {
     unsigned long long eMask = tasx_get_ecore_mask();
@@ -231,21 +261,35 @@ bool JobHookProcess(DWORD pid, HANDLE hProc)
     if (known != g_pidJob.end())
         return known->second != -1; // already tracked: job or sticky fallback
 
+    int mode = GetJobAssignMode();
+    if (mode == 2) { // off
+        g_pidJob[pid] = -1;
+        if (ShouldLogPerPid("job-off", pid, 300))
+            LOGW("[Jobs] PID %lu JobAssignMode=off -> per-process fallback (no Job assign)", pid);
+        return false;
+    }
+
     /* Assign-once: a process can live in exactly one Job. Retry is
        pointless for both failure modes, so the fallback is sticky. */
     if (!tasx_job_assign(g_jobBackground, hProc)) {
         DWORD err = GetLastError();
         g_pidJob[pid] = -1;
-        if (err == ERROR_ALREADY_ASSIGNED) {
-            if (LogRateLimit("job-foreign", 300))
-                LOGW("[Jobs] PID %lu already in foreign job -> per-process mode (no retry)",
-                     pid);
+        if (mode == 1) {
+            BOOL inJob = FALSE;
+            IsProcessInJob(hProc, nullptr, &inJob);
+            if (ShouldLogPerPid("job-force", pid, 300))
+                LOGW("[Jobs] PID %lu assign denied (err %lu, inJob=%d, mode=force) -> per-process fallback (foreign Job without BREAKAWAY_OK)", pid, (unsigned long)err, (int)inJob);
+        } else if (err == ERROR_ALREADY_ASSIGNED) {
+            // foreign job without BREAKAWAY_OK — external launcher/manager owns it
+            if (ShouldLogPerPid("job-foreign", pid, 300))
+                LOGW("[Jobs] PID %lu already in foreign job (no BREAKAWAY_OK) -> per-process fallback, no retry", pid);
         } else if (err == ERROR_ACCESS_DENIED) {
-            if (LogRateLimit("job-denied", 60))
-                LOGW("[Jobs] PID %lu assign denied (err 5) -> per-process fallback", pid);
+            // err 5: process already in another Job, sticky fallback
+            if (ShouldLogPerPid("job-denied", pid, 300))
+                LOGW("[Jobs] PID %lu assign denied (err 5, foreign Job) -> per-process fallback, sticky no retry", pid);
         } else {
-            if (LogRateLimit("job-assign-fail", 30))
-                LOGW("[Jobs] PID %lu assign to background failed | Code: %lu", pid,
+            if (ShouldLogPerPid("job-assign-fail", pid, 60))
+                LOGW("[Jobs] PID %lu assign to background failed | Code: %lu -> per-process fallback", pid,
                      (unsigned long)err);
         }
         return false;

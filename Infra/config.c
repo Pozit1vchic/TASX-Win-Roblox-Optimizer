@@ -6,10 +6,10 @@
 #include <stdio.h>
 #include <string.h>
 
-#define CFG_MAX_ENTRIES 128
+#define CFG_MAX_ENTRIES 192
 #define CFG_SECTION_LEN 32
-#define CFG_KEY_LEN     48
-#define CFG_VALUE_LEN   128
+#define CFG_KEY_LEN     64
+#define CFG_VALUE_LEN   192
 
 typedef struct {
     char section[CFG_SECTION_LEN];
@@ -141,6 +141,30 @@ void config_load(const char* iniPath)
             trim_inplace(key);
             trim_inplace(val);
 
+            // Inline comment strip (quote-aware): only trim after value if
+            // preceded by whitespace and not inside quoted value.
+            char* comment = NULL;
+            for (char* c = val; *c; ++c) {
+                if (*c == '"' || *c == '\'') {
+                    // skip quoted segment
+                    char quote = *c;
+                    ++c;
+                    while (*c && *c != quote) {
+                        if (*c == '\\' && *(c+1)) c += 2;
+                        else ++c;
+                    }
+                    continue;
+                }
+                if ((*c == ';' || *c == '#') && (c == val || (c > val && (*(c-1) == ' ' || *(c-1) == '\t')))) {
+                    comment = c;
+                    break;
+                }
+            }
+            if (comment) {
+                *comment = '\0';
+                trim_inplace(val);
+            }
+
             if (key[0] == '\0' || curSection[0] == '\0') continue;
 
             if (g_count >= CFG_MAX_ENTRIES) break;
@@ -246,4 +270,149 @@ void config_reload(const char* iniPath)
     g_wasLoaded = 0;
     LeaveCriticalSection(&g_cfgCs);
     config_load(iniPath);
+}
+
+int config_get_entry_count(void)
+{
+    ensure_cfg_cs();
+    EnterCriticalSection(&g_cfgCs);
+    int c = g_count;
+    LeaveCriticalSection(&g_cfgCs);
+    return c;
+}
+
+int config_get_entry(int index, char* secOut, int secLen, char* keyOut, int keyLen,
+                     char* valOut, int valLen)
+{
+    ensure_cfg_cs();
+    EnterCriticalSection(&g_cfgCs);
+    if (index < 0 || index >= g_count) { LeaveCriticalSection(&g_cfgCs); return 0; }
+    if (secOut && secLen > 0) {
+        strncpy(secOut, g_entries[index].section, (size_t)secLen - 1);
+        secOut[secLen - 1] = '\0';
+    }
+    if (keyOut && keyLen > 0) {
+        strncpy(keyOut, g_entries[index].key, (size_t)keyLen - 1);
+        keyOut[keyLen - 1] = '\0';
+    }
+    if (valOut && valLen > 0) {
+        strncpy(valOut, g_entries[index].value, (size_t)valLen - 1);
+        valOut[valLen - 1] = '\0';
+    }
+    LeaveCriticalSection(&g_cfgCs);
+    return 1;
+}
+
+int config_create_default(const char* iniPath)
+{
+    FILE* probe = fopen(iniPath, "r");
+    if (probe) { fclose(probe); return 0; }
+
+    FILE* fp = fopen(iniPath, "w");
+    if (!fp) return 0;
+
+    const char* tpl =
+        "; TASX configuration — farm preset for 25-30 clients, FPS cap 20\n"
+        "; Every key is optional; missing keys use built-in defaults.\n"
+        "; Booleans: 1/0 (true/false/on/off also accepted). Hot-reload: ~10s.\n"
+        "; Inline comments after values (\"key=val ; comment\") are supported.\n"
+        "\n"
+        "[TASX]\n"
+        "; Trimmer: UNFOCUSED farm clients are WORKING, not idle (focused never trimmed).\n"
+        "; FarmKeepHot=1: periodic pass is soft-only; hard trim only after\n"
+        "; HardTrimAfterSec of continuous unfocus (or commit-critical >=90%).\n"
+        "TrimUnfocused=1\n"
+        "TrimIntervalSec=10\n"
+        "AdaptiveTrim=1\n"
+        "TrimSkipBelowMB=250\n"
+        "FarmKeepHot=1\n"
+        "HardTrimAfterSec=1800\n"
+        "; Background memory priority 1=VeryLow..5=Normal (default 2=Low on farm)\n"
+        "BackgroundMemPriority=2\n"
+        "\n"
+        "; Job Object cgroup policy\n"
+        "; JobAssignMode: auto = try assign, sticky fallback on foreign job (default)\n"
+        ";              diagnose = same + InJob diagnostics (deprecated alias: force)\n"
+        ";              off   = never assign to Job, per-process fallback only\n"
+        "JobAssignMode=auto\n"
+        "BackgroundCpuCapPercent=25\n"
+        "JobCpuCapPercent=0 ; legacy alias for BackgroundCpuCapPercent\n"
+        "JobMemoryCapMB=8192 ; per-process cap: 0=off, 8192 for farm\n"
+        "KillOnAgentExit=1\n"
+        "CommitBlockThreshold=85\n"
+        "MuteBackground=1\n"
+        "PinBackgroundToECores=1\n"
+        "DynamicAffinity=1\n"
+        "\n"
+        "; Focus stability (anti-flap)\n"
+        "; FocusDwellMs: min time a focus state must persist before TASX reacts.\n"
+        "; Flickers < dwell are ignored and profile rewrites coalesced.\n"
+        "FocusDwellMs=1800\n"
+        "FocusHysteresisMs=500 ; legacy alias, ignored when FocusDwellMs is set\n"
+        "\n"
+        "; Pagefile / disk free warning threshold (GB on pagefile volume)\n"
+        "PagefileWarnFreeGB=8\n"
+        "\n"
+        "; System cleaner (split: standby purge is safe, global empty-WS evicts farms)\n"
+        "LowMemReactor=1\n"
+        "LowMemCooldownSec=30\n"
+        "SystemCleaner=1\n"
+        "SystemCleanStandby=1\n"
+        "SystemCleanEmptyWS=0 ; 1=also empty ALL working sets (NOT for keep-hot farms)\n"
+        "SystemCleanMinIntervalSec=60\n"
+        "PurgeStandbyOnLaunch=1 ; debounced to 1 per 60s for pack spawns\n"
+        "\n"
+        "; Watchdog\n"
+        "SelfCpuWatchdogPercent=5\n"
+        "\n"
+        "; Crash handler + timer + power + tweaks\n"
+        "; TimerResolution 0.5ms is auto-disabled on farm presets without focus.\n"
+        "KillCrashHandler=1\n"
+        "TimerResolution=1\n"
+        "PowerPlan=1\n"
+        "ApplyTweaks=1\n"
+        "DisableCpuBoost=0\n"
+        "WarmClientFiles=1\n"
+        "WarmMaxMB=256\n"
+        "DesktopHeapExpand=0\n"
+        "\n"
+        "; Injector coexistence\n"
+        "InjectorOwnsGraphics=0 ; 0=farm owns graphics (recommended), 1=injector owns\n"
+        "ForceGraphicsFlags=0 ; when 1, TASX writes graphics flags even if InjectorOwnsGraphics=1\n"
+        "\n"
+        "[Roblox]\n"
+        "; Legacy graphics section — kept for compat, overridden by [FastFlags] Preset.\n"
+        "; For farm: UncapFps=0 + TargetFps=20 caps ALL clients strictly to 20 FPS.\n"
+        "UncapFps=0\n"
+        "TargetFps=20\n"
+        "Renderer=D3D10 ; Auto|Vulkan|D3D11|D3D10|OpenGL (Vulkan not recommended for weak PCs)\n"
+        "Lighting=Voxel ; Auto|Voxel|ShadowMap|Future (Voxel=fastest)\n"
+        "TextureQuality=0 ; Auto|0|1|2|3 (0=lowest)\n"
+        "DisableTelemetry=1\n"
+        "ExtraVersionsDirs=\n"
+        "\n"
+        "[FastFlags]\n"
+        "; Preset: farm20 | farm30 | weak | balanced | off (off = only manual keys + [Roblox] section)\n"
+        "; farm15 = deprecated alias of farm20.\n"
+        "; Alive potato (allowlist): Tex0, FRM0, grass 0, CSG-low, PauseVoxelizer,\n"
+        "; SkyGray, MSAA1, NoDPIScale, D3D11. FPS placeholder written zero-cost.\n"
+        "Preset=farm20\n"
+        "FFlagsPruneDead=1\n"
+        "; Manual overrides on top of preset (any FFlag/DFInt/DFFlag key = value).\n"
+        "; Example: FFlagRenderGpuTextureCompressor=True\n"
+        "; Graphics flags are skipped when InjectorOwnsGraphics=1 unless ForceGraphicsFlags=1.\n"
+        "\n"
+        "[ETW]\n"
+        "DisableTelemetry=1\n"
+        "\n"
+        "[Log]\n"
+        "LogLevel=info\n"
+        "LogFile=\n"
+        "\n"
+        "[Net]\n"
+        "SharedCacheRoot=\n"
+        "CacheLinks=\n";
+    fputs(tpl, fp);
+    fclose(fp);
+    return 1;
 }

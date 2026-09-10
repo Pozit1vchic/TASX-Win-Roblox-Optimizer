@@ -379,16 +379,53 @@ void SweepDiscover()
     }
 }
 
+ULONGLONG g_farmWsBytes = 0; /* sum of tracked clients WS, refreshed ~10s */
+
 void UpdateWorkingSetCache()
 {
     std::vector<ProcStat> stats;
     if (!QueryProcStats(stats)) return;
+    ULONGLONG sum = 0;
     for (const auto& s : stats) {
         if (g_rbxHandles.count(s.pid)) {
             TrimmerUpdateWorkingSet(s.pid, s.workingSet);
+            sum += (ULONGLONG)s.workingSet;
         }
     }
+    g_farmWsBytes = sum;
     g_lastWsUpdateMs = GetTickCount64();
+}
+
+/* Farm RAM budget honesty check: keep-hot is physically impossible when the
+   farm working set alone exceeds ~75% of installed RAM — paging is then
+   inevitable and the log should say so instead of silently trimming. */
+static void FarmBudgetCheck()
+{
+    if (g_rbxHandles.empty()) return;
+    MEMORYSTATUSEX ms{};
+    ms.dwLength = sizeof(ms);
+    if (!GlobalMemoryStatusEx(&ms) || !ms.ullTotalPhys) return;
+    double frac = (double)g_farmWsBytes / (double)ms.ullTotalPhys;
+    if (frac > 0.75) {
+        if (LogRateLimit("farm-budget", 600)) {
+            double farmGB = (double)g_farmWsBytes / (1ull << 30);
+            double totalGB = (double)ms.ullTotalPhys / (1ull << 30);
+            LOGW("[TASX] WARNING: farm WS %.1f/%.1f GB RAM (>75%%) — keep-hot impossible, paging inevitable: reduce client count or add RAM",
+                 farmGB, totalGB);
+        }
+    }
+}
+
+static int GetFocusDwellMs()
+{
+    // primary: FocusDwellMs, fallback: FocusHysteresisMs for compat, default 1800
+    const char* dwellStr = config_get_str("TASX", "FocusDwellMs", nullptr);
+    if (dwellStr)
+        return config_get_int("TASX", "FocusDwellMs", 1800);
+    const char* hyst = config_get_str("TASX", "FocusHysteresisMs", nullptr);
+    if (hyst)
+        return config_get_int("TASX", "FocusHysteresisMs", 1800);
+    return 1800;
 }
 
 void ApplyFocusIfChanged()
@@ -398,16 +435,47 @@ void ApplyFocusIfChanged()
     if (hwnd) GetWindowThreadProcessId(hwnd, &pid);
 
     bool isRoblox = pid != 0 && g_rbxHandles.count(pid) != 0;
-    // Configurable hysteresis, bypassed so the FIRST focus detection
-    // after startup (or when nothing was focused yet) is instant.
-    static ULONGLONG lastFocusCheckMs = 0;
     ULONGLONG now = GetTickCount64();
-    int hysteresisMs = config_get_int("TASX", "FocusHysteresisMs", 500);
-    bool bypassHysteresis = (g_appliedFocus == 0 && isRoblox);
-    if (!bypassHysteresis && (now - lastFocusCheckMs) < (ULONGLONG)hysteresisMs) {
-        return;
+    int dwellMs = GetFocusDwellMs();
+    if (dwellMs < 100) dwellMs = 100;
+    if (dwellMs > 10000) dwellMs = 10000;
+
+    DWORD candidate = isRoblox ? pid : 0;
+
+    // Dwell/anti-flap: pending coalescing state
+    static DWORD s_pendingPid = 0;
+    static ULONGLONG s_pendingSince = 0;
+    static bool s_hasPending = false;
+
+    if (candidate == g_appliedFocus) {
+        // stable state — clear pending (no switch needed)
+        s_hasPending = false;
+    } else if (g_appliedFocus == 0 && candidate != 0) {
+        // Legacy bypass restored: very first focus after startup is instant
+        // (old FocusHysteresisMs behavior). Dwell applies only to later switches.
+        s_hasPending = false;
+        // fallthrough to apply below
+    } else {
+        // need to switch to candidate, but must dwell
+        if (s_hasPending && s_pendingPid == candidate) {
+            if (now - s_pendingSince < (ULONGLONG)dwellMs) {
+                return; // still dwelling, ignore flap
+            }
+            // dwell elapsed -> commit
+            s_hasPending = false;
+        } else if (s_hasPending && s_pendingPid != candidate) {
+            // flap: candidate changed again before dwell elapsed — coalesce, restart dwell
+            s_pendingPid = candidate;
+            s_pendingSince = now;
+            return;
+        } else {
+            s_hasPending = true;
+            s_pendingPid = candidate;
+            s_pendingSince = now;
+            return;
+        }
     }
-    lastFocusCheckMs = now;
+    // dwell satisfied — proceed to apply candidate (which equals isRoblox?pid:0)
 
     if (isRoblox && g_appliedFocus != pid)
     {
@@ -464,9 +532,39 @@ void ApplyFocusIfChanged()
    the on/off transition. */
 bool g_timerActive = false;
 
+/* Farm preset detection (single place): farm15 is a deprecated alias of
+   farm20; weak/balanced are the other TASX-owned-graphics presets. */
+static bool IsFarmPreset()
+{
+    const char* pPre = config_get_str("FastFlags", "Preset", nullptr);
+    if (!pPre) pPre = config_get_str("TASX", "Preset", nullptr);
+    if (!pPre) return false;
+    char pl[16] = {};
+    size_t pn = 0;
+    for (; pPre[pn] && pn + 1 < sizeof(pl); ++pn)
+        pl[pn] = (char)tolower((unsigned char)pPre[pn]);
+    pl[pn] = '\0';
+    return (strcmp(pl, "farm15") == 0 || strcmp(pl, "farm20") == 0 ||
+            strcmp(pl, "farm30") == 0 || strcmp(pl, "weak") == 0 ||
+            strcmp(pl, "balanced") == 0);
+}
+
+void TimerOffIfFarmNoFocus()
+{
+    // disable 0.5ms timer when farm preset, nothing focused
+    if (IsFarmPreset() && g_appliedFocus == 0 && g_timerActive) {
+        unsigned long actual = 0;
+        tasx_set_timer_resolution(5000, 0, &actual);
+        g_timerActive = false;
+        // Do NOT log on every toggle to avoid spam (timer off is silent/good)
+    }
+}
+
 void TimerOn()
 {
     if (g_timerActive) return;
+    // If farm preset and nothing focused, keep timer off (user directive)
+    if (IsFarmPreset() && g_appliedFocus == 0) return; // no timer for pure farm
     unsigned long actual = 0;
     if (config_get_bool("TASX", "TimerResolution", 1) &&
         tasx_set_timer_resolution(5000, 1, &actual)) {
@@ -485,18 +583,52 @@ void TimerOff()
     LOGI("[TASX] Timer resolution released");
 }
 
-/* Full-system memory pass: standby purge + empty every working set. Needs
-   elevation; without admin this is a silent no-op (the limited-mode banner
-   at startup already told the user). */
+/* Full-system memory pass, split in two halves (farm keep-hot):
+   - standby purge: cheap page-cache reclaim, safe for farms (default ON);
+   - empty every working set: evicts ALL processes incl. farm clients,
+     the direct cause of "slow return from swap" (default OFF on farm*).
+   Needs elevation; without admin this is a silent no-op (the limited-mode
+   banner at startup already told the user). */
+static bool IsFarmStrict()
+{
+    // Strict farm presets only (farm15/20/30): keep-hot farms where a global
+    // empty-WS is pure harm. weak/balanced keep legacy default (ON).
+    const char* pPre = config_get_str("FastFlags", "Preset", nullptr);
+    if (!pPre) pPre = config_get_str("TASX", "Preset", nullptr);
+    if (!pPre) return false;
+    char pl[16] = {};
+    size_t pn = 0;
+    for (; pPre[pn] && pn + 1 < sizeof(pl); ++pn)
+        pl[pn] = (char)tolower((unsigned char)pPre[pn]);
+    pl[pn] = '\0';
+    return (strcmp(pl, "farm15") == 0 || strcmp(pl, "farm20") == 0 ||
+            strcmp(pl, "farm30") == 0);
+}
+
+static bool SystemCleanEmptyWSAllowed()
+{
+    const char* v = config_get_str("TASX", "SystemCleanEmptyWS", nullptr);
+    if (!v) return IsFarmStrict() ? false : true;
+    return config_get_bool("TASX", "SystemCleanEmptyWS", 0) != 0;
+}
+
 void SystemCleanPass(bool announce)
 {
     if (!config_get_bool("TASX", "SystemCleaner", 1)) return;
     if (!tasx_is_elevated()) return;
 
-    if (tasx_purge_standby_list() && tasx_empty_working_sets_system()) {
-        if (announce)
-            LOGI("[TASX] System clean: standby purged + all working sets emptied");
-    }
+    bool standby = false, emptied = false;
+    if (config_get_bool("TASX", "SystemCleanStandby", 1))
+        standby = tasx_purge_standby_list() != 0;
+    // Global empty-WS never touches a focused client and never runs on a
+    // keep-hot farm unless explicitly opted in (SystemCleanEmptyWS=1).
+    if (SystemCleanEmptyWSAllowed() && g_appliedFocus == 0)
+        emptied = tasx_empty_working_sets_system() != 0;
+
+    if (announce && (standby || emptied))
+        LOGI("[TASX] System clean: standby %s%s",
+             standby ? "purged" : "skipped",
+             emptied ? " + all working sets emptied" : "");
 }
 
 /* Kernel wakes us only when commit memory runs low -> no cleaning timer. */
@@ -546,20 +678,76 @@ void HandleConfigChanged()
     LOGI("[TASX] Config reloaded: %s", g_iniPath);
     /* Idempotent re-applies; trimmer thresholds are picked up lazily by
        IntervalMs()/BelowSkipThresholdCached on the next deadline. */
+    TimerOffIfFarmNoFocus();
+    FFlagsMarkDirty();
     FFlagsApply();
     TweaksApplyOneShot();
     JobsRefreshDynamic(g_appliedFocus != 0);
 }
 
+static std::wstring GetPagefileVolumeRoot()
+{
+    wchar_t sysDrive[16] = L"C:";
+    HKEY h = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+            L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management",
+            0, KEY_QUERY_VALUE, &h) == ERROR_SUCCESS) {
+        wchar_t buf[512] = {};
+        DWORD type = 0, sz = sizeof(buf);
+        if (RegQueryValueExW(h, L"PagingFiles", nullptr, &type, (LPBYTE)buf, &sz) == ERROR_SUCCESS) {
+            // REG_MULTI_SZ: first string is e.g. "C:\\pagefile.sys 0 0"
+            if (buf[1] == L':' && (buf[2] == L'\\' || buf[2] == L'/')) {
+                sysDrive[0] = buf[0];
+                sysDrive[1] = L':';
+                sysDrive[2] = L'\0';
+            }
+        }
+        RegCloseKey(h);
+    } else {
+        wchar_t env[16] = {};
+        if (GetEnvironmentVariableW(L"SystemDrive", env, 16) && env[1] == L':') {
+            sysDrive[0] = env[0];
+            sysDrive[1] = L':';
+            sysDrive[2] = L'\0';
+        }
+    }
+    std::wstring root(sysDrive);
+    if (root.size() == 2) root += L"\\";
+    else if (root.back() != L'\\') root += L"\\";
+    return root;
+}
+
+static void CheckPagefileWarning(const char* tag)
+{
+    int threshGB = config_get_int("TASX", "PagefileWarnFreeGB", 8);
+    if (threshGB <= 0) return;
+    std::wstring root = GetPagefileVolumeRoot();
+    ULARGE_INTEGER freeBytes{}, totalBytes{};
+    if (!GetDiskFreeSpaceExW(root.c_str(), &freeBytes, &totalBytes, nullptr)) {
+        // fallback to NULL (current volume)
+        if (!GetDiskFreeSpaceExW(nullptr, &freeBytes, &totalBytes, nullptr))
+            return;
+        root = L"?\\";
+    }
+    ULONGLONG thresh = (ULONGLONG)threshGB << 30;
+    if (freeBytes.QuadPart < thresh) {
+        if (LogRateLimit(tag, 300)) {
+            char driveA[8] = "?";
+            if (!root.empty() && root[0] != L'?') {
+                driveA[0] = (char)root[0];
+                driveA[1] = ':';
+                driveA[2] = '\0';
+            }
+            double f = (double)freeBytes.QuadPart / (1ull<<30);
+            double t = (double)totalBytes.QuadPart / (1ull<<30);
+            LOGW("[TASX] WARNING: Pagefile volume %s low free %.1f/%.1f GB (< %d GB) — увеличьте/перенесите файл подкачки: Система -> Доп.параметры -> Быстродействие -> Дополнительно -> Виртуальная память", driveA, f, t, threshGB);
+        }
+    }
+}
+
 void HandleRobloxCreated(DWORD pid)
 {
-    /* Memory safety: pagefile volume free-space check */
-    ULARGE_INTEGER freeBytes;
-    ZeroMemory(&freeBytes, sizeof(freeBytes));
-    if (GetDiskFreeSpaceExW(NULL, &freeBytes, NULL, NULL)) {
-        if (freeBytes.QuadPart < (8ULL << 30) && LogRateLimit("pagefile-low-boot", 300))
-            LOGW("[TASX] WARNING: Pagefile volume < 8 GB free");
-    }
+    CheckPagefileWarning("pagefile-low-boot");
     bool isNew = !g_rbxHandles.count(pid);
     HookClient(pid);
     if (g_rbxHandles.count(pid))
@@ -568,9 +756,16 @@ void HandleRobloxCreated(DWORD pid)
 
     if (isNew && g_rbxHandles.count(pid)) {
         if (tasx_is_elevated() && config_get_bool("TASX", "PurgeStandbyOnLaunch", 1)) {
-            if (tasx_purge_standby_list())
-                LOGI("[TASX] Standby list purged (RAM reclaimed for the game)");
+            // Debounced: a 30-client pack spawns 30 events, one purge is enough.
+            static ULONGLONG lastLaunchPurgeMs = 0;
+            ULONGLONG nowPurge = GetTickCount64();
+            if (nowPurge - lastLaunchPurgeMs >= 60000) {
+                lastLaunchPurgeMs = nowPurge;
+                if (tasx_purge_standby_list())
+                    LOGI("[TASX] Standby list purged (RAM reclaimed for the game)");
+            }
         }
+        FFlagsMarkDirty();
         SweepCrashHandlers();
         FFlagsApply();
         UpdateWorkingSetCache();
@@ -591,6 +786,75 @@ void HandleRobloxExited(DWORD pid)
     }
 }
 
+/* Ini hygiene: warn once per unknown section|key (typos like BackgroudCpuCap
+   otherwise fail silently into defaults). [FastFlags] accepts any flag name
+   (filtered separately by the FFlags allowlist), so only its section name
+   and the reserved keys (Preset/InjectorOwnsGraphics/ForceGraphicsFlags)
+   are checked here. */
+static void ValidateIniKeys()
+{
+    static const char* known[] = {
+        "tasx|trimunfocused", "tasx|trimintervalsec", "tasx|adaptivetrim",
+        "tasx|trimskipbelowmb", "tasx|farmkeephot", "tasx|hardtrimaftersec",
+        "tasx|backgroundmempriority", "tasx|jobassignmode",
+        "tasx|backgroundcpucappercent",
+        "tasx|jobcpucappercent",
+        "tasx|jobmemorycapmb", "tasx|killonagentexit",
+        "tasx|commitblockthreshold", "tasx|mutebackground",
+        "tasx|pinbackgroundtoecores", "tasx|dynamicaffinity",
+        "tasx|focusdwellms", "tasx|focushysteresisms",
+        "tasx|pagefilewarnfreegb", "tasx|lowmemreactor",
+        "tasx|lowmemcooldownsec", "tasx|systemcleaner",
+        "tasx|systemcleanstandby", "tasx|systemcleanemptyws",
+        "tasx|systemcleanminintervalsec", "tasx|purgestandbyonlaunch",
+        "tasx|selfcpuwatchdogpercent", "tasx|killcrashhandler",
+        "tasx|timerresolution", "tasx|powerplan", "tasx|applytweaks",
+        "tasx|disablecpuboost", "tasx|warmclientfiles", "tasx|warmmaxmb",
+        "tasx|desktopheapexpand", "tasx|injectorownsgraphics",
+        "tasx|forcegraphicsflags", "tasx|preset", "tasx|disabletelemetry",
+        "roblox|uncapfps", "roblox|targetfps", "roblox|renderer",
+        "roblox|lighting", "roblox|texturequality",
+        "roblox|disabletelemetry", "roblox|extraversionsdirs",
+        "etw|disabletelemetry", "log|loglevel", "log|logfile",
+        "net|sharedcacheroot", "net|cachelinks",
+        // [FastFlags] section name itself (+ any flag key, see above)
+        "fastflags|preset", "fastflags|injectorownsgraphics",
+        "fastflags|forcegraphicsflags", "fastflags|jobassignmode",
+    };
+    int cnt = config_get_entry_count();
+    for (int i = 0; i < cnt; ++i) {
+        char sec[32] = {}, key[64] = {}, val[192] = {};
+        if (!config_get_entry(i, sec, sizeof(sec), key, sizeof(key), val, sizeof(val)))
+            continue;
+        char lowSec[32] = {}, lowKey[64] = {}, low[96] = {};
+        size_t a = 0;
+        for (; sec[a] && a + 1 < sizeof(lowSec); ++a) {
+            char c = sec[a];
+            if (c >= 'A' && c <= 'Z') c = (char)(c + ('a' - 'A'));
+            lowSec[a] = c;
+        }
+        size_t b = 0;
+        for (; key[b] && b + 1 < sizeof(lowKey); ++b) {
+            char c = key[b];
+            if (c >= 'A' && c <= 'Z') c = (char)(c + ('a' - 'A'));
+            lowKey[b] = c;
+        }
+        if (strcmp(lowSec, "fastflags") == 0) continue; // any flag name allowed
+        snprintf(low, sizeof(low), "%s|%s", lowSec, lowKey);
+        bool ok = false;
+        for (size_t k = 0; k < sizeof(known) / sizeof(known[0]); ++k) {
+            if (strcmp(low, known[k]) == 0) { ok = true; break; }
+        }
+        if (!ok) {
+            char tag[128];
+            snprintf(tag, sizeof(tag), "ini-unknown-%s", low);
+            if (LogRateLimit(tag, 3600))
+                LOGW("[TASX] WARNING: unknown ini key [%s] %s — typo? ignored, default applies",
+                     sec, key);
+        }
+    }
+}
+
 /* One-time startup in dependency order. Returns 1 when the main loop
    should run, 0 when the process must exit silently (already running). */
 int InitSubsystems()
@@ -598,11 +862,27 @@ int InitSubsystems()
     tasx_log_init();
 
     config_default_path(g_iniPath, MAX_PATH);
+    // If ini is missing, create documented defaults atomically
+    {
+        DWORD attr = GetFileAttributesA(g_iniPath);
+        if (attr == INVALID_FILE_ATTRIBUTES) {
+            if (config_create_default(g_iniPath)) {
+                // will be loaded below
+            }
+        }
+    }
     config_load(g_iniPath);
     tasx_log_configure(config_get_str("Log", "LogFile", ""),
                        tasx_log_level_from_str(config_get_str("Log", "LogLevel", "info")));
     g_iniMtime = IniMtimeKey();
-    LOGI("[TASX] Config: %s%s", g_iniPath, config_loaded() ? " (loaded)" : " (defaults)");
+    if (!config_loaded()) {
+        LOGW("[TASX] WARNING: TASX.ini не найден — работают встроенные дефолты. Ожидаемый путь: %s", g_iniPath);
+        if (config_create_default(g_iniPath))
+            LOGI("[TASX] Created default TASX.ini at %s", g_iniPath);
+    } else {
+        LOGI("[TASX] Config: %s (loaded)", g_iniPath);
+        ValidateIniKeys();
+    }
 
     g_singleInstanceMutex = CreateMutexW(nullptr, TRUE, L"Local\\TASX_Optimizer_Mutex");
     if (g_singleInstanceMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -727,10 +1007,13 @@ int RunTasx()
                 LOGI("[TASX] Low memory event -> reactive clean");
                 tasx_purge_standby_list();
                 TrimmerTrimAllAggressive();
-                // NEVER call SystemCleanPass (global WS empty) if focused client exists
+                // SystemCleanPass is internally split: standby always, global
+                // empty-WS only when allowed AND nothing focused.
                 if (g_appliedFocus == 0) {
                     SystemCleanPass(true);
                 } else {
+                    if (config_get_bool("TASX", "SystemCleanStandby", 1))
+                        tasx_purge_standby_list(); // safe half still applies
                     LOGI("[TASX] Skipped system clean (focused PID %lu active)", g_appliedFocus);
                 }
                 break;
@@ -764,15 +1047,9 @@ int RunTasx()
             NetCacheLogConnections(ClientPidSet());
             g_lastCrashSweepMs = now;
 
-            // periodic pagefile free-space check + self CPU watchdog.
-            ULARGE_INTEGER freeBytes;
-    ZeroMemory(&freeBytes, sizeof(freeBytes));
-            if (GetDiskFreeSpaceExW(NULL, &freeBytes, NULL, NULL)) {
-                if (freeBytes.QuadPart < (8ULL << 30)) {
-                    if (LogRateLimit("pagefile-low", 300))
-                        LOGW("[TASX] WARNING: Pagefile volume < 8 GB free");
-                }
-            }
+            // periodic pagefile free-space check + farm budget + self CPU watchdog.
+            CheckPagefileWarning("pagefile-low");
+            FarmBudgetCheck();
             {
                 static ULONGLONG lastCpuCheckMs = 0;
                 static ULONGLONG lastSelfCpuMs = 0;

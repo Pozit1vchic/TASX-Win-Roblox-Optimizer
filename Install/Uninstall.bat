@@ -22,5 +22,6 @@ if %errorlevel% neq 0 (
 )
 
 schtasks /delete /tn "%TASKNAME%" /f
+taskkill /f /im TASX.exe >nul 2>&1
 echo Task '%TASKNAME%' has been removed.
 pause
