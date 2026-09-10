@@ -1,27 +1,49 @@
-# TASX Optimizer
+# TASX Optimizer 🚀
 
-TASX is an optimizer designed to aid in combatting Roblox engine's not-so-good optimization and memory hogging, while increasing FPS. No, this will not get you banned, it is not a cheat.
+> **Внимание:** Это не чит. Это не магия. Это просто код, который делает то, что Microsoft забыла сделать за 30 лет существования Windows.
 
-## What does it do?
+TASX — это оптимизатор, созданный для борьбы с ужасной оптимизацией движка Roblox и его привычкой жрать память как не в себя. Если у вас лагает, а FPS стремится к нулю — возможно, вам сюда. Если нет — зачем вы здесь?
 
-TASX watches for Roblox processes (WMI process watcher + event-driven foreground hook, with a polling safety net) and continuously rebalances the system around them:
+## 🤔 Что оно вообще делает?
 
-**Focused instance (the window you play in)**
+TASX следит за процессами Roblox (через WMI, хуки и прочие страшные слова) и перераспределяет ресурсы системы так, чтобы ваша игра работала, а не умирала мучительной смертью.
 
+<<<<<<< HEAD
 - `HIGH_PRIORITY_CLASS` + full CPU affinity
 - Exempt from Windows EcoQoS / power throttling (proper `PROCESS_POWER_THROTTLING_STATE`)
 - Normal I/O & memory priority
 - 0.5 ms system timer resolution for smoother frame pacing (auto-off on farm presets without focus — pure farm doesn't need it)
+=======
+###  Активное окно (То, в которое вы тыкаете мышкой)
+- **Приоритет:** `HIGH_PRIORITY_CLASS` + полный доступ ко всем ядрам CPU.
+- **Энергосбережение:** Выключено. Windows не будет душить ваш процесс ради "экологии".
+- **Таймер:** Разрешение 0.5 мс для плавности кадров (потому что стандартные 15 мс — это для калькуляторов).
+>>>>>>> 8f0b0e54997256acdf14460d51878310d8461cd4
 
-**Background instances (multi-account farming)**
+### 📉 Фоновые окна (Для тех, кто фармит на 10 аккаунтах одновременно)
+- **Приоритет:** `IDLE_PRIORITY_CLASS`. Засунуто на энергоэффективные ядра (E-cores), если они есть.
+- **Режим эффективности:** Включен EcoQoS. I/O и память имеют минимальный приоритет.
+- **Очистка памяти:** Рабочий набор обрезается по расписанию. **Важно:** Пока окно активно, ничего не режется, чтобы не было фризов.
 
+<<<<<<< HEAD
 - `IDLE_PRIORITY_CLASS`, pinned to efficiency cores on hybrid CPUs (or the low half of the CPU otherwise)
 - Windows Efficiency Mode (process-level EcoQoS only, no per-thread enumeration), VeryLow I/O priority, Low memory priority on farms (`BackgroundMemPriority=2`, VeryLow elsewhere)
 - Farm keep-hot (`FarmKeepHot=1` on farm presets): unfocused farm clients are WORKING, not idle — periodic pass is soft-only, hard trim (`EmptyWorkingSet`) only after `HardTrimAfterSec` (default 1800s) of continuous unfocus or commit-critical ≥90% — **never while focused**; below `TrimSkipBelowMB` (default 250) is skipped (0 syscalls, cached); 30s log line carries `avg WS MB, commit%` for farm sizing
 - **FarmBoost hotkey** (`BoostHotkey=Ctrl+Alt+B`, system-wide): one keypress flips ALL clients between `IDLE/E-cores/EcoQoS` and full power (`HIGH/all cores`, EcoQoS off, trimming suspended) with a single summary line — the fix for farms that rot in efficiency mode. Newborns join the hot side automatically; focus switches never demote while ON; `FarmBoostDefault=1` starts hot. Set `BoostHotkey=off` to disable (e.g. combo taken by macro soft)
+=======
+### 🌍 Системные твики
+- Отключение Game DVR и фоновой записи (они только мешают).
+- Сеть: отключение троттлинга (`SystemResponsiveness=0`).
+- GPU: Принудительная высокая производительность для `RobloxPlayerBeta.exe`.
+- Питание: Переключение схемы на "Ultimate Performance" во время игры.
+- Очистка Standby List: Мгновенная очистка кэша памяти при запуске Roblox (требует админа).
+- Убийство `RobloxCrashHandler.exe`: Потому что он бесполезен и только занимает место.
+- **FastFlags:** Автоматическая настройка JSON конфигов для каждого клиента (снятие лимита FPS, выбор рендерера, отключение телеметрии).
+>>>>>>> 8f0b0e54997256acdf14460d51878310d8461cd4
 
-**System-wide**
+## 🤝 Совместимость с Инжекторами
 
+<<<<<<< HEAD
 - Game DVR / background capture off, MMCSS `Games` profile raised, network throttling off (`SystemResponsiveness=0`)
 - High-performance GPU preference registered for the actual `RobloxPlayerBeta.exe` path (falls back to exe name)
 - Power scheme switched to Ultimate/High Performance while Roblox runs, restored afterwards
@@ -30,13 +52,22 @@ TASX watches for Roblox processes (WMI process watcher + event-driven foreground
 - TASX FastFlags `farm20` (default; `farm15` = deprecated alias, `farm30` staged for macro-speed A/B): **Roblox allowlist build (09.2025+, 18 keys)** — alive potato only: `TextureQuality=0`, `FRMQuality 0`, grass distances 0 + still air, CSG switching distances low (100/75/100/150), `PauseVoxelizer`, `SkyGray`, `MSAA=1`, `NoDPIScale`, `D3D11` (D3D10/Voxel/streaming/telemetry/physics/LOD flags are dead client-side and are NOT written; `DFIntTaskSchedulerTargetFps` kept as zero-cost FPS-intent placeholder) — merged into every installed client version's `ClientSettings\ClientAppSettings.json` atomically, preserving your own flags; mtime+size+hash skip avoids redundant rewrites; scans debounced to 1 per 5s with dirty flag; `FFlagsPruneDead=1` (farm default) removes pre-allowlist leftovers, hourly `Effective set` line shows alive counts; unknown/dead flags filtered with one-time `LOGW` + live replacement hint; anti-flags (`Future`/`ShadowMap`, `TextureQuality 1-3`, `FRM>0`, `MSAA>1`, grass>0) forced down/removed. Presets: `[FastFlags] Preset=farm20|farm30|weak|balanced|off` + manual `key=value` on top; legacy `[Roblox]` section kept for compat (D3D10→D3D11 fallback, Voxel→PauseVoxelizer+SkyGray mapping)
 - File logging (`[Log] LogFile`, 1 MB rotation to `.old`, simultaneous stdout) with level filter (`LogLevel=info|warn|error`); all log lines go through `LOGI/W/E` and are rate-limited
 - Hot-reload: `TASX.ini` mtime is polled every 10 s on the main loop — edits re-apply FFlags/tweaks/job limits and trimmer thresholds without restart or new threads
+=======
+Мы не враги. Мы коллеги.
+>>>>>>> 8f0b0e54997256acdf14460d51878310d8461cd4
 
-All of the above is configurable — see `TASX.ini` (documented, optional; sane defaults apply without it).
+| За что отвечаем мы (TASX) | За что отвечает Инжектор |
+|---------------------------|--------------------------|
+| Приоритеты CPU, Affinity, EcoQoS | Графика, качество текстур, лимит FPS |
+| Приоритеты I/O и Памяти | Пер-клиентские настройки RAM |
+| Mute Audio (WASAPI) | ... |
+| Отключение телеметрии | ... |
 
-## Injector Coexistence Contract
+По умолчанию (`InjectorOwnsGraphics=1`) TASX не трогает графические настройки, чтобы не ломать ваши красивые пресеты из инжектора.
 
-TASX and the external FFlags/Injector launcher are designed to share the same clients without conflict.
+## ⚠️ Что нужно знать перед запуском
 
+<<<<<<< HEAD
 | Concern | Owner |
 |---------|-------|
 | FPS cap, render quality, per-client RAM cap | External injector (when `InjectorOwnsGraphics=1`) else TASX farm preset |
@@ -46,31 +77,44 @@ TASX and the external FFlags/Injector launcher are designed to share the same cl
 
 Ownership rule (`Infra/fflags.cc:BuildFlagPlan`): graphics keys (`TargetFps`, renderer, lighting, texture, `GpuTextureCompressor`, `UseLevelOfDetail`) are skipped when `InjectorOwnsGraphics=1` unless `ForceGraphicsFlags=1` overrides. Streaming/telemetry always written. `ApplyToVersion` still performs the atomic read-modify-write (temp-file + `MoveFileEx`), preserving every injector-owned and user JSON key.
 Default: legacy configs without the key keep `InjectorOwnsGraphics=1` (old behavior); new farm `TASX.ini` ships `InjectorOwnsGraphics=0` + `Preset=farm20` (TASX owns graphics). With a farm preset (`farm15|farm20|farm30|weak|balanced`) a missing key defaults to `0`; without preset it defaults to `1`.
+=======
+1. **Админка обязательна.** Для твиков реестра (HKLM) и очистки памяти нужны права администратора.
+2. **Установка:** Запустите `ScheduledTaskInstaller.bat` один раз. Это создаст задачу "TASX Agent", которая будет запускаться с повышенными привилегиями при старте системы.
+3. **Удаление:** Надоело? Запустите `Uninstall.bat`. Всё почистится.
+4. **Один экземпляр:** Нельзя запустить два TASX одновременно. Система не каменная, но и не бесконечная.
 
-## What do I need to know?
+## 📥 Как скачать и использовать (Для нормальных людей)
+>>>>>>> 8f0b0e54997256acdf14460d51878310d8461cd4
 
-- HKLM-level tweaks and the standby-list purge require elevation — run ``ScheduledTaskInstaller.bat`` once (creates the elevated "TASX Agent" startup task). Values are written only when they differ, everything is idempotent.
-- To remove TASX, run ``Uninstall.bat``.
-- Only one TASX instance can run at a time (single-instance guard).
+Забудьте про Discord, ссылки и долгие ожидания ответа от поддержки.
 
-## How do I use this?
+1. Идите в раздел **[Releases](https://github.com/ВАШ_НИК/TASX/releases)** справа (или сверху, зависит от темы оформления GitHub).
+2. Скачайте последний `.zip` архив.
+3. Распакуйте.
+4. Запустите `ScheduledTaskInstaller.bat` от имени администратора.
+5. Готово. TASX теперь работает в фоне и делает вашу жизнь лучше.
 
-For non-programmers, head over to the [RYFTENIUS Discord](https://hub.ryftenius.com/) & download the latest release in #OPTIMIZER (This comes with the source), install TASX with ``ScheduledTaskInstaller.bat``, to remove use ``Uninstall.bat``.
+## 💻 Для программистов (Компиляция)
 
-This will automatically add TASX to startup as "TASX Agent".
+Если вы считаете, что можете сделать лучше (спойлер: вряд ли), вот как собрать проект:
 
-For programmers, open the solution file & compile: **Debug** = console build with logging, **Release** = silent windowed build. Keep in mind ``TASX.exe`` must be in the same DIR as the ``.bat`` files (and optionally ``TASX.ini``) for it to be serviced.
+**Visual Studio:**
+- Откройте `.sln` файл.
+- **Debug**: Сборка с консолью и логами.
+- **Release**: Тихая сборка без окон.
 
-Or build from the command line (MSYS2/MinGW):
+**MSYS2 / MinGW:**
+Используйте следующие команды в терминале:
 
-```bash
-make            # console build with logging
-make windows    # silent GUI-subsystem build
-make clean
-```
+- `make` — Консольная версия с логами
+- `make windows` — Тихая GUI-версия
+- `make clean` — Убрать за собой мусор
 
-## How does it work under the hood?
+*Примечание:* `TASX.exe` должен лежать в одной папке с `.bat` файлами и `TASX.ini` (если он есть).
 
+## 🧠 Как это работает под капотом (Для гиков)
+
+<<<<<<< HEAD
 ```
 Infra/
   master.cpp   Orchestrator: one typed event queue fed by WMI, the job
@@ -124,13 +168,21 @@ Infra/
 Farm `TASX.ini` keys: `[TASX] JobAssignMode=auto|diagnose|off`, `FarmKeepHot=1`, `HardTrimAfterSec=1800`, `BackgroundMemPriority=2`, `TrimSkipBelowMB=250`, `SystemCleanStandby=1`, `SystemCleanEmptyWS=0`, `FocusDwellMs=1800` (legacy `FocusHysteresisMs` fallback), `PagefileWarnFreeGB=8`, `BackgroundCpuCapPercent=25`, `JobMemoryCapMB=8192` (per-process); `[FastFlags] Preset=farm20` + `FFlagsPruneDead=1` + manual `key=value`; `[Roblox] UncapFps=0 TargetFps=20 Renderer=D3D10 Lighting=Voxel TextureQuality=0` (legacy, overridden by preset; D3D10→D3D11, Voxel→PauseVoxelizer). Budget rule: `N × avgWS < RAM × 0.75` or keep-hot is impossible (rate-limited `LOGW`).
 
 Designed for 100+ concurrent clients: no polling loops on the hot path (exits, crash handlers, memory cleaning and discovery are event-driven), ~5 threads total regardless of client count, and one syscall for whole-system state.
+=======
+Архитектура построена на событиях, а не на тупых циклах опроса.
 
-The low-level core (`config.c`, `ntsys.c`) is plain C, compiled by the C compiler and linked into the C++ binary; everything that talks to Win32 is resolved dynamically so the binary runs on any Windows 10/11 version.
+- **Infra/master.cpp**: Оркестратор. Один поток, одна очередь событий. Горячая перезагрузка конфига каждые 10 секунд.
+- **WMI.cc**: Асинхронный наблюдатель за процессами. Никаких гонок данных.
+- **jobs.cc**: Управление группами процессов. Фокус определяется точно, без перемещения между джобами (чтобы не получить `ACCESS_DENIED`).
+- **CPU.cc**: Работа с топологией процессора через `ntsys.c`. Никакого хардкода.
+- **trimmer.cc**: Умная обрезка памяти. Никогда не трогает активное окно.
+- **fflags.cc**: Атомарная запись в `ClientAppSettings.json`. Сохраняет ваши личные флаги, добавляет наши.
+Всего ~5 потоков независимо от количества запущенных клиентов Roblox. Эффективность? Да.
 
-## Prereqs (All)
+## 📋 Требования
 
-- Be on Windows
+- **ОС:** Windows 10/11 (другие ОС не поддерживаются, извините, линуксоиды).
+- **Права:** Администратор (для полной функциональности).
 
-## Prereqs (If compiling)
-
-- Visual Studio w/ C++ build tools (C++ 17), or MSYS2/MinGW-w64 (g++ + gcc)
+---
+*Сделано с любовью, ненавистью к лагам и сарказмом.*
