@@ -8,53 +8,41 @@ TASX — это оптимизатор, созданный для борьбы �
 
 TASX следит за процессами Roblox (через WMI, хуки и прочие страшные слова) и перераспределяет ресурсы системы так, чтобы ваша игра работала, а не умирала мучительной смертью.
 
-<<<<<<< HEAD
-- `HIGH_PRIORITY_CLASS` + full CPU affinity
-- Exempt from Windows EcoQoS / power throttling (proper `PROCESS_POWER_THROTTLING_STATE`)
-- Normal I/O & memory priority
-- 0.5 ms system timer resolution for smoother frame pacing (auto-off on farm presets without focus — pure farm doesn't need it)
-=======
-###  Активное окно (То, в которое вы тыкаете мышкой)
+### 🎯 Активное окно (то, в которое вы тыкаете мышкой)
+
 - **Приоритет:** `HIGH_PRIORITY_CLASS` + полный доступ ко всем ядрам CPU.
-- **Энергосбережение:** Выключено. Windows не будет душить ваш процесс ради "экологии".
-- **Таймер:** Разрешение 0.5 мс для плавности кадров (потому что стандартные 15 мс — это для калькуляторов).
->>>>>>> 8f0b0e54997256acdf14460d51878310d8461cd4
+- **Энергосбережение:** выключено — EcoQoS / power throttling off через `PROCESS_POWER_THROTTLING_STATE`.
+- **I/O и память:** нормальный приоритет.
+- **Таймер:** 0.5 мс для плавности кадров (потому что стандартные 15 мс — это для калькуляторов). Авто-отключение на фермах без фокуса — чистому фарму он не нужен.
 
-### 📉 Фоновые окна (Для тех, кто фармит на 10 аккаунтах одновременно)
-- **Приоритет:** `IDLE_PRIORITY_CLASS`. Засунуто на энергоэффективные ядра (E-cores), если они есть.
-- **Режим эффективности:** Включен EcoQoS. I/O и память имеют минимальный приоритет.
-- **Очистка памяти:** Рабочий набор обрезается по расписанию. **Важно:** Пока окно активно, ничего не режется, чтобы не было фризов.
+### 📉 Фоновые окна (для тех, кто фармит на 10+ аккаунтах)
 
-<<<<<<< HEAD
-- `IDLE_PRIORITY_CLASS`, pinned to efficiency cores on hybrid CPUs (or the low half of the CPU otherwise)
-- Windows Efficiency Mode (process-level EcoQoS only, no per-thread enumeration), VeryLow I/O priority, Low memory priority on farms (`BackgroundMemPriority=2`, VeryLow elsewhere)
-- Farm keep-hot (`FarmKeepHot=1` on farm presets): unfocused farm clients are WORKING, not idle — periodic pass is soft-only, hard trim (`EmptyWorkingSet`) only after `HardTrimAfterSec` (default 1800s) of continuous unfocus or commit-critical ≥90% — **never while focused**; below `TrimSkipBelowMB` (default 250) is skipped (0 syscalls, cached); 30s log line carries `avg WS MB, commit%` for farm sizing
-- **FarmBoost hotkey** (`BoostHotkey=Ctrl+Alt+B`, system-wide): one keypress flips ALL clients between `IDLE/E-cores/EcoQoS` and full power (`HIGH/all cores`, EcoQoS off, trimming suspended) with a single summary line — the fix for farms that rot in efficiency mode. Newborns join the hot side automatically; focus switches never demote while ON; `FarmBoostDefault=1` starts hot. Set `BoostHotkey=off` to disable (e.g. combo taken by macro soft)
-=======
+- **Приоритет:** `IDLE_PRIORITY_CLASS`, pinned на энергоэффективные E-ядра (гибридные CPU; иначе — нижняя половина ядер).
+- **Режим эффективности:** Windows Efficiency Mode (EcoQoS только на уровне процесса, без перечисления потоков), VeryLow I/O, Low memory priority на фермах (`BackgroundMemPriority=2`, VeryLow в остальных случаях).
+- **Очистка памяти (keep-hot, `FarmKeepHot=1`):** нефокусные клиенты фермы — РАБОТАЮЩИЕ, а не бездействующие. Периодический проход — только soft; жёсткий trim (`EmptyWorkingSet`) — только после `HardTrimAfterSec` (1800 с по умолчанию) непрерывной потери фокуса или при commit ≥90%. **Никогда для окна в фокусе.** Ниже `TrimSkipBelowMB` (250 по умолчанию) — пропуск (0 syscall'ов, из кэша). Лог раз в 30 с несёт `avg WS MB, commit%` для расчёта плотности фермы.
+- **FarmBoost hotkey** (`BoostHotkey=Ctrl+Alt+B`, системный): одна клавиша переключает ВСЕ клиенты между `IDLE/E-ядра/EcoQoS` и полной мощью (`HIGH/все ядра`, EcoQoS off, обрезка приостановлена). Новые клиенты автоматически присоединяются к «горячей» стороне; переключение фокуса не понижает их, пока FarmBoost ON; `FarmBoostDefault=1` стартует горячим. `BoostHotkey=off` отключает (если комбинация занята макро-софтом).
+
+
 ### 🌍 Системные твики
-- Отключение Game DVR и фоновой записи (они только мешают).
-- Сеть: отключение троттлинга (`SystemResponsiveness=0`).
-- GPU: Принудительная высокая производительность для `RobloxPlayerBeta.exe`.
-- Питание: Переключение схемы на "Ultimate Performance" во время игры.
-- Очистка Standby List: Мгновенная очистка кэша памяти при запуске Roblox (требует админа).
-- Убийство `RobloxCrashHandler.exe`: Потому что он бесполезен и только занимает место.
-- **FastFlags:** Автоматическая настройка JSON конфигов для каждого клиента (снятие лимита FPS, выбор рендерера, отключение телеметрии).
->>>>>>> 8f0b0e54997256acdf14460d51878310d8461cd4
+
+- Отключение Game DVR и фоновой записи; MMCSS-профиль `Games` поднят; сетевой троттлинг выключен (`SystemResponsiveness=0`).
+- GPU: high-performance preference для реального пути `RobloxPlayerBeta.exe` (fallback на имя exe).
+- Питание: схема Ultimate/High Performance на время игры, восстановление после.
+- Очистка Standby List при запуске Roblox (debounce 1/60 с для пачечных спавнов; требует админа). Система чистки разделена: `SystemCleanStandby=1` (безопасный reclaim page-cache) vs `SystemCleanEmptyWS=0` на фермах (глобальный empty working sets выселяет целые фермы — только opt-in).
+- Убийство `RobloxCrashHandler.exe` постоянным свипом (job-child фильтр: убиваются только crash handlers).
+- **FastFlags:** атомарная настройка `ClientAppSettings.json` для каждой установленной версии клиента (подробности в разделе «Под капотом»).
+
+### 🆕 Умные фичи ферм
+
+- **Farm auto-respawn** (`RespawnOnCrash=1`): неожиданно упавший клиент перезапускается той же командной строкой — с лимитом `RespawnPerHourMax` против crash-loop. Полностью event-driven: ни одного нового потока и ни одного цикла опроса.
+- **Автоочистка кэша** (`CacheMaxGB=20`): LRU-чистка старых файлов кэша — кэш больше не разрастается на сотни ГБ за недели 24/7 фарма.
+- **Watchdog зависших клиентов** (`HungClientWatch=1`): детект через `IsHungAppWindow` → лог + опционально kill/respawn (связка с auto-respawn).
+- **CLI:** `TASX.exe --status` — one-shot сводка фермы (клиенты, RAM, commit %, соединения) и выход; `--preset farm20` — быстрое переключение пресета FastFlags в `TASX.ini`.
+- **Таймстампы в логе** (`LogTimestamps=1`): каждая строка файлового лога со временем — разбор инцидентов больше не вслепую.
 
 ## 🤝 Совместимость с Инжекторами
 
-<<<<<<< HEAD
-- Game DVR / background capture off, MMCSS `Games` profile raised, network throttling off (`SystemResponsiveness=0`)
-- High-performance GPU preference registered for the actual `RobloxPlayerBeta.exe` path (falls back to exe name)
-- Power scheme switched to Ultimate/High Performance while Roblox runs, restored afterwards
-- Standby memory list purged on launch, debounced to 1 per 60s for pack spawns (needs admin, otherwise safe-mode without HKLM/standby/system-cleaner); system cleaner is split: `SystemCleanStandby=1` (safe page-cache reclaim) vs `SystemCleanEmptyWS=0` on farms (global empty working sets evict whole farms — opt-in only)
-- `RobloxCrashHandler.exe` suppressed on an ongoing sweep (job-child filter: only crash handlers are killed)
-- TASX FastFlags `farm20` (default; `farm15` = deprecated alias, `farm30` staged for macro-speed A/B): **Roblox allowlist build (09.2025+, 18 keys)** — alive potato only: `TextureQuality=0`, `FRMQuality 0`, grass distances 0 + still air, CSG switching distances low (100/75/100/150), `PauseVoxelizer`, `SkyGray`, `MSAA=1`, `NoDPIScale`, `D3D11` (D3D10/Voxel/streaming/telemetry/physics/LOD flags are dead client-side and are NOT written; `DFIntTaskSchedulerTargetFps` kept as zero-cost FPS-intent placeholder) — merged into every installed client version's `ClientSettings\ClientAppSettings.json` atomically, preserving your own flags; mtime+size+hash skip avoids redundant rewrites; scans debounced to 1 per 5s with dirty flag; `FFlagsPruneDead=1` (farm default) removes pre-allowlist leftovers, hourly `Effective set` line shows alive counts; unknown/dead flags filtered with one-time `LOGW` + live replacement hint; anti-flags (`Future`/`ShadowMap`, `TextureQuality 1-3`, `FRM>0`, `MSAA>1`, grass>0) forced down/removed. Presets: `[FastFlags] Preset=farm20|farm30|weak|balanced|off` + manual `key=value` on top; legacy `[Roblox]` section kept for compat (D3D10→D3D11 fallback, Voxel→PauseVoxelizer+SkyGray mapping)
-- File logging (`[Log] LogFile`, 1 MB rotation to `.old`, simultaneous stdout) with level filter (`LogLevel=info|warn|error`); all log lines go through `LOGI/W/E` and are rate-limited
-- Hot-reload: `TASX.ini` mtime is polled every 10 s on the main loop — edits re-apply FFlags/tweaks/job limits and trimmer thresholds without restart or new threads
-=======
 Мы не враги. Мы коллеги.
->>>>>>> 8f0b0e54997256acdf14460d51878310d8461cd4
 
 | За что отвечаем мы (TASX) | За что отвечает Инжектор |
 |---------------------------|--------------------------|
@@ -65,119 +53,120 @@ TASX следит за процессами Roblox (через WMI, хуки и 
 
 По умолчанию (`InjectorOwnsGraphics=1`) TASX не трогает графические настройки, чтобы не ломать ваши красивые пресеты из инжектора.
 
+**Правило владения ключами** (`Infra/fflags.cc: BuildFlagPlan`): графические ключи (`TargetFps`, renderer, lighting, texture, `GpuTextureCompressor`, `UseLevelOfDetail`) пропускаются при `InjectorOwnsGraphics=1`, если не задан `ForceGraphicsFlags=1`. Streaming/телеметрия пишутся всегда. `ApplyToVersion` всё равно выполняет атомарный read-modify-write (tmp-файл + `MoveFileEx`), сохраняя все ключи инжектора и пользователя.
+
+**Дефолты:** старые конфиги без ключа сохраняют `InjectorOwnsGraphics=1` (прежнее поведение); новая ферма-конфиг `TASX.ini` поставляется с `InjectorOwnsGraphics=0` + `Preset=farm20` (графика под контролем TASX). С ферма-пресетом (`farm15|farm20|farm30|weak|balanced`) отсутствие ключа = `0`; без пресета = `1`.
+
 ## ⚠️ Что нужно знать перед запуском
 
-<<<<<<< HEAD
-| Concern | Owner |
-|---------|-------|
-| FPS cap, render quality, per-client RAM cap | External injector (when `InjectorOwnsGraphics=1`) else TASX farm preset |
-| CPU priority, affinity, EcoQoS, I/O+mem priority, job limits | TASX |
-| Audio mute | TASX (WASAPI) |
-| Telemetry disable | Both (FFlags + ETW) |
+1. **Админка обязательна.** Для твиков реестра (HKLM), очистки памяти и джобов нужны права администратора.
+2. **Установка:** запустите `ScheduledTaskInstaller.bat` один раз. Это создаст задачу «TASX Agent», которая будет запускаться с повышенными привилегиями при старте системы.
+3. **Удаление:** надоело? Запустите `Uninstall.bat`. Всё почистится.
+4. **Один экземпляр:** нельзя запустить два TASX одновременно. Система не каменная, но и не бесконечная.
 
-Ownership rule (`Infra/fflags.cc:BuildFlagPlan`): graphics keys (`TargetFps`, renderer, lighting, texture, `GpuTextureCompressor`, `UseLevelOfDetail`) are skipped when `InjectorOwnsGraphics=1` unless `ForceGraphicsFlags=1` overrides. Streaming/telemetry always written. `ApplyToVersion` still performs the atomic read-modify-write (temp-file + `MoveFileEx`), preserving every injector-owned and user JSON key.
-Default: legacy configs without the key keep `InjectorOwnsGraphics=1` (old behavior); new farm `TASX.ini` ships `InjectorOwnsGraphics=0` + `Preset=farm20` (TASX owns graphics). With a farm preset (`farm15|farm20|farm30|weak|balanced`) a missing key defaults to `0`; without preset it defaults to `1`.
-=======
-1. **Админка обязательна.** Для твиков реестра (HKLM) и очистки памяти нужны права администратора.
-2. **Установка:** Запустите `ScheduledTaskInstaller.bat` один раз. Это создаст задачу "TASX Agent", которая будет запускаться с повышенными привилегиями при старте системы.
-3. **Удаление:** Надоело? Запустите `Uninstall.bat`. Всё почистится.
-4. **Один экземпляр:** Нельзя запустить два TASX одновременно. Система не каменная, но и не бесконечная.
-
-## 📥 Как скачать и использовать (Для нормальных людей)
->>>>>>> 8f0b0e54997256acdf14460d51878310d8461cd4
+## 📥 Как скачать и использовать (для нормальных людей)
 
 Забудьте про Discord, ссылки и долгие ожидания ответа от поддержки.
 
-1. Идите в раздел **[Releases](https://github.com/ВАШ_НИК/TASX/releases)** справа (или сверху, зависит от темы оформления GitHub).
+1. Идите в раздел **[Releases](https://github.com/Pozit1vchic/TASX-Win-Roblox-Optimizer/releases)** справа (или сверху, зависит от темы оформления GitHub).
 2. Скачайте последний `.zip` архив.
 3. Распакуйте.
 4. Запустите `ScheduledTaskInstaller.bat` от имени администратора.
 5. Готово. TASX теперь работает в фоне и делает вашу жизнь лучше.
 
-## 💻 Для программистов (Компиляция)
+## 💻 Для программистов (компиляция)
 
 Если вы считаете, что можете сделать лучше (спойлер: вряд ли), вот как собрать проект:
 
-**Visual Studio:**
-- Откройте `.sln` файл.
-- **Debug**: Сборка с консолью и логами.
-- **Release**: Тихая сборка без окон.
+**Visual Studio:** откройте `TASX.sln`. Debug — сборка с консолью и логами, Release — тихая сборка без окон.
 
-**MSYS2 / MinGW:**
-Используйте следующие команды в терминале:
+**MSYS2 / MinGW (Makefile):**
 
-- `make` — Консольная версия с логами
-- `make windows` — Тихая GUI-версия
-- `make clean` — Убрать за собой мусор
+- `mingw32-make` — консольная версия с логами (`TASX.exe`)
+- `mingw32-make windows` — тихая GUI-версия
+- `mingw32-make test` — юнит-тесты парсеров (config / fflags / respawn cmdline)
+- `mingw32-make clean` — убрать за собой мусор
+
+**build.bat** — сборка без make (нужен только g++ и windres из MSYS2 UCRT64; путь к тулчейну правится в шапке файла): `build.bat` — консольная, `build.bat silent` — GUI.
 
 *Примечание:* `TASX.exe` должен лежать в одной папке с `.bat` файлами и `TASX.ini` (если он есть).
 
-## 🧠 Как это работает под капотом (Для гиков)
+## 🧠 Как это работает под капотом (для гиков)
 
-<<<<<<< HEAD
+Архитектура построена на событиях, а не на тупых циклах опроса.
+
+- **Infra/master.cpp** — оркестратор. Один поток, одна очередь событий. Горячая перезагрузка конфига по mtime каждые 10 секунд.
+- **WMI.cc** — асинхронный наблюдатель за процессами. Никаких гонок данных.
+- **jobs.cc** — управление группами процессов. Фокус определяется точно, без перемещения между джобами (чтобы не получить `ACCESS_DENIED`).
+- **CPU.cc** — работа с топологией процессора через `ntsys.c`. Никакого хардкода.
+- **trimmer.cc** — умная обрезка памяти. Никогда не трогает активное окно.
+- **fflags.cc** — атомарная запись в `ClientAppSettings.json`. Сохраняет ваши личные флаги, добавляет наши.
+
+Всего ~5 потоков независимо от количества запущенных клиентов Roblox. Эффективность? Да.
+
+### Карта модулей
+
 ```
 Infra/
-  master.cpp   Orchestrator: one typed event queue fed by WMI, the job
-               completion port, the foreground hook and the low-memory
-               reactor; single-threaded state machine via InitSubsystems() /
-               ShutdownSubsystems() and a Ctrl-handler (graceful exit,
-               power/Wait/Mutex teardown); hot-reload of TASX.ini by mtime;
-               FocusDwellMs anti-flap (default 1800ms, first focus instant),
-               pagefile-volume warning (PagefileWarnFreeGB, free/total + hint),
-               missing TASX.ini auto-create with documented defaults
-  WMI.cc       Async WMI process watcher with Indication-drain (active count
-               + manual-reset event) to avoid Release races; extracts PID
-               straight from TargetInstance.Handle
-  jobs.cc      Single background cgroup (farm CPU/MEM caps, KILL_ON_CLOSE
-               gated by KillOnAgentExit); JobAssignMode=auto|diagnose|off
-               (force = deprecated alias), per-PID rate-limited sticky
-               fallback for foreign Job (ERROR_ACCESS_DENIED/
-               ALREADY_ASSIGNED, no BREAKAWAY_OK); focus is per-process
-               (priority/affinity/EcoQoS via CPU.cc, never a cross-job move);
-               IOCP filters NEW_PROCESS to robloxcrashhandler.exe only
-  CPU.cc       No topology state — single source of truth is ntsys.c
-               (tasx_get_*_mask); per-process scheduling profile + boost toggle
-  trimmer.cc   One scheduler thread + min-heap of trim deadlines: adaptive
-               interval, skip-if-below-threshold, focused never trimmed,
-               farm keep-hot (soft-only, hard after HardTrimAfterSec);
-               shared 5s pressure snapshot; no LowMem handle (single owner
-               is the master reactor)
-  stats.cc     Whole-system process snapshot in ONE syscall + helper
-               QueryProcessNameByPid for the job-port filter
-  winhook.cc   EVENT_SYSTEM_FOREGROUND hook (notification only; focus PID is
-               read via GetForegroundWindow — single mechanism)
-  hotkey.cc    System-wide FarmBoost hotkey via RegisterHotKey on a dedicated
-               message-pump thread (no window/DLL/polling); combo parsed from
-               BoostHotkey, event-driven toggle in master.cpp
-  ntsys.c      [C] ntdll/privilege layer + file logging (tasx_log, 1 MB
-               rotation), P/E topology, commit charge, ETW (verified GUIDs)
-  config.c     [C] TASX.ini reader with BOM skip + hot-reload (config_reload),
-               auto-create defaults (config_create_default), entry iterator
-               for [FastFlags] manual overrides
-  tweaks.cc    One-shot registry tweaks + power scheme; UserGpuPreferences
-               resolves the full exe path; HKLM gated by elevation
-  fflags.cc    Roblox ClientAppSettings.json reader/writer with escaped-quote
-               aware parsing and mtime+size+hash skip (atomic tmp+MoveFileEx,
-               5s debounce + dirty flag); farm20/farm30(+farm15 alias)/weak/
-               balanced presets built from the official 18-key allowlist
-               (dead pre-allowlist flags not written, optional PruneDead
-               cleanup, hourly effective-set log); anti-flags,
+  master.cpp   Оркестратор: одна типизированная очередь событий, которую
+               кормят WMI, job completion port, foreground hook и
+               low-memory reactor; однопоточный state machine через
+               InitSubsystems()/ShutdownSubsystems() и Ctrl-handler
+               (корректный выход, teardown power/Wait/Mutex); hot-reload
+               TASX.ini по mtime; FocusDwellMs anti-flap (по умолчанию
+               1800 мс, первый фокус мгновенный), предупреждение о
+               pagefile-томе (PagefileWarnFreeGB), авто-создание TASX.ini
+               с документированными дефолтами; FarmBoost toggle;
+               respawn-очередь упавших клиентов
+  WMI.cc       Асинхронный WMI-наблюдатель процессов с Indication-drain,
+               PID — напрямую из TargetInstance.Handle
+  jobs.cc      Единая фоновая cgroup (CPU/MEM caps фермы, KILL_ON_CLOSE
+               под управлением KillOnAgentExit); JobAssignMode=auto|
+               diagnose|off (force = deprecated alias), per-PID sticky
+               fallback для foreign Job; фокус — per-process
+               (priority/affinity/EcoQoS через CPU.cc, никогда cross-job
+               move); IOCP фильтрует NEW_PROCESS только на
+               robloxcrashhandler.exe
+  CPU.cc       Нет своего состояния топологии — единственный источник
+               истины ntsys.c (tasx_get_*_mask); per-process профиль
+               планировщика + boost toggle
+  trimmer.cc   Один поток-планировщик + min-heap дедлайнов: адаптивный
+               интервал, skip-if-below-threshold, фокус не тримится,
+               farm keep-hot; общий снапшот давления за 5 с; LowMem
+               принадлежит master reactor
+  stats.cc     Снапшот всех процессов ОДНИМ syscall'ом (NtQuerySystemInfo)
+               + QueryProcessNameByPid для job-port фильтра
+  winhook.cc   EVENT_SYSTEM_FOREGROUND hook (только уведомление; PID
+               фокуса читается через GetForegroundWindow — единый механизм)
+  hotkey.cc    Системный FarmBoost hotkey через RegisterHotKey на
+               отдельном message-pump потоке (без окна/DLL/поллинга)
+  ntsys.c      [C] ntdll/privilege слой + файловый лог (tasx_log, ротация
+               1 МБ), P/E топология, commit charge, ETW (проверенные GUID)
+  config.c     [C] Чтение TASX.ini с пропуском BOM + hot-reload
+               (config_reload), авто-создание дефолтов
+               (config_create_default), итератор записей для [FastFlags]
+  tweaks.cc    One-shot реестровые твики + power scheme; UserGpuPreferences
+               резолвит полный путь exe; HKLM под элевацией
+  fflags.cc    Чтение/запись ClientAppSettings.json с escaped-quote
+               парсингом и mtime+size+hash скипом (атомарный tmp +
+               MoveFileEx, debounce 5 с + dirty flag); пресеты
+               farm20/farm30(+farm15 alias)/weak/balanced из официального
+               18-ключевого allowlist'а; anti-флаги,
                InjectorOwnsGraphics/ForceGraphicsFlags gate
 ```
 
-Farm `TASX.ini` keys: `[TASX] JobAssignMode=auto|diagnose|off`, `FarmKeepHot=1`, `HardTrimAfterSec=1800`, `BackgroundMemPriority=2`, `TrimSkipBelowMB=250`, `SystemCleanStandby=1`, `SystemCleanEmptyWS=0`, `FocusDwellMs=1800` (legacy `FocusHysteresisMs` fallback), `PagefileWarnFreeGB=8`, `BackgroundCpuCapPercent=25`, `JobMemoryCapMB=8192` (per-process); `[FastFlags] Preset=farm20` + `FFlagsPruneDead=1` + manual `key=value`; `[Roblox] UncapFps=0 TargetFps=20 Renderer=D3D10 Lighting=Voxel TextureQuality=0` (legacy, overridden by preset; D3D10→D3D11, Voxel→PauseVoxelizer). Budget rule: `N × avgWS < RAM × 0.75` or keep-hot is impossible (rate-limited `LOGW`).
+**FastFlags подробнее:** пресеты собраны из официального allowlist'а Roblox (18 ключей, 09.2025+): живёт только картофель — `TextureQuality=0`, `FRMQuality 0`, grass-дистанции 0 + тихий воздух, CSG switching low, `PauseVoxelizer`, `SkyGray`, `MSAA=1`, `NoDPIScale`, `D3D11`. Мёртвые pre-allowlist флаги (D3D10, Voxel, streaming, telemetry, physics, LOD) НЕ пишутся; `DFIntTaskSchedulerTargetFps` остаётся как zero-cost placeholder FPS-интента. Сканы дебаунсятся 1/5 с с dirty-флагом; `FFlagsPruneDead=1` (ферма-дефолт) удаляет pre-allowlist остатки; hourly-строка `Effective set` показывает живые счётчики; неизвестные/мёртвые флаги фильтруются с one-time `LOGW` + подсказкой замены; анти-флаги (`Future`/`ShadowMap`, `TextureQuality 1-3`, `FRM>0`, `MSAA>1`, grass>0) принудительно сбиваются/удаляются. Презир: `[FastFlags] Preset=farm20|farm30|weak|balanced|off` + ручные `key=value` поверх; легаси `[Roblox]` секция сохранена для совместимости (D3D10→D3D11 fallback, Voxel→PauseVoxelizer+SkyGray).
 
-Designed for 100+ concurrent clients: no polling loops on the hot path (exits, crash handlers, memory cleaning and discovery are event-driven), ~5 threads total regardless of client count, and one syscall for whole-system state.
-=======
-Архитектура построена на событиях, а не на тупых циклах опроса.
+### Логирование и hot-reload
 
-- **Infra/master.cpp**: Оркестратор. Один поток, одна очередь событий. Горячая перезагрузка конфига каждые 10 секунд.
-- **WMI.cc**: Асинхронный наблюдатель за процессами. Никаких гонок данных.
-- **jobs.cc**: Управление группами процессов. Фокус определяется точно, без перемещения между джобами (чтобы не получить `ACCESS_DENIED`).
-- **CPU.cc**: Работа с топологией процессора через `ntsys.c`. Никакого хардкода.
-- **trimmer.cc**: Умная обрезка памяти. Никогда не трогает активное окно.
-- **fflags.cc**: Атомарная запись в `ClientAppSettings.json`. Сохраняет ваши личные флаги, добавляет наши.
-Всего ~5 потоков независимо от количества запущенных клиентов Roblox. Эффективность? Да.
+Все лог-строки идут через `LOGI/W/E` и rate-limited'ятся. `[Log] LogFile` — файловый лог (1 МБ ротация в `.old`, одновременный stdout), `LogLevel=info|warn|error`. `LogTimestamps=1` добавляет время к каждой строке файлового лога. Hot-reload: mtime `TASX.ini` поллится каждые 10 с на главном цикле — правки пере-применяют FFlags/tweaks/лимиты джобов и пороги триммера без рестарта и новых потоков.
+### Ключи фермы `TASX.ini`
+
+`[TASX] JobAssignMode=auto|diagnose|off`, `FarmKeepHot=1`, `HardTrimAfterSec=1800`, `BackgroundMemPriority=2`, `TrimSkipBelowMB=250`, `SystemCleanStandby=1`, `SystemCleanEmptyWS=0`, `FocusDwellMs=1800` (легаси `FocusHysteresisMs` fallback), `PagefileWarnFreeGB=8`, `BackgroundCpuCapPercent=25`, `JobMemoryCapMB=8192` (per-process); `[FastFlags] Preset=farm20` + `FFlagsPruneDead=1` + ручные `key=value`; `[Roblox] UncapFps=0 TargetFps=20 Renderer=D3D10 Lighting=Voxel TextureQuality=0` (легаси, перекрывается пресетом; D3D10→D3D11, Voxel→PauseVoxelizer). Бюджетное правило: `N × avgWS < RAM × 0.75`, иначе keep-hot невозможен (rate-limited `LOGW`).
+
+Новые ферма-ключи: `RespawnOnCrash=1`, `RespawnPerHourMax=6`, `HungClientWatch=1`, `HungKillAfterSecMin=60`, `CacheMaxGB=20`, `LogTimestamps=1`.
+
+Проектировался под 100+ одновременных клиентов: нет polling-циклов на горячем пути (выходы, crash handlers, чистка памяти и discovery — событийные), ~5 потоков независимо от числа клиентов, один syscall для состояния всей системы.
 
 ## 📋 Требования
 
@@ -185,4 +174,5 @@ Designed for 100+ concurrent clients: no polling loops on the hot path (exits, c
 - **Права:** Администратор (для полной функциональности).
 
 ---
+
 *Сделано с любовью, ненавистью к лагам и сарказмом.*
