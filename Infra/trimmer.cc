@@ -146,15 +146,14 @@ static unsigned long BgMemPrio()
 
 void SoftTrim(HANDLE h)
 {
-    // Background memory priority + release of the trimmed page cost only.
-    // Deliberately NO QUOTA_LIMITS_HARDWS_MIN_ENABLE: pinning the current
-    // working set as a hard minimum would fight every later trim.
+    if (!config_get_bool("TASX", "TrimUnfocused", 1)) return; // never page out
     tasx_set_memory_priority(h, BgMemPrio());
     SetProcessWorkingSetSizeEx(h, (SIZE_T)-1, (SIZE_T)-1, 0);
 }
 
 void HardTrim(HANDLE h)
 {
+    if (!config_get_bool("TASX", "TrimUnfocused", 1)) return; // never page out
     EmptyWorkingSet(h);
 }
 
@@ -213,6 +212,11 @@ DWORD WINAPI SchedulerThread(LPVOID)
             continue;
         }
         /* WAIT_TIMEOUT: a heap deadline fired — fall through. */
+
+        if (!config_get_bool("TASX", "TrimUnfocused", 1)) {
+            Sleep(30000);
+            continue;
+        }
 
         Due d{};
         bool haveDue = false;

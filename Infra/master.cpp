@@ -113,6 +113,7 @@ std::unordered_map<DWORD, HANDLE> g_waitHandles; // RegisterWait handles
 std::unordered_map<DWORD, ULONGLONG> g_retryBlocked;
 DWORD g_appliedFocus = 0; /* PID currently running the focused profile */
 bool g_pageInBusy = false;
+ULONGLONG g_lastPageInMs = 0;
 WinHook* g_hook = nullptr;
 FarmHotkey* g_hotkey = nullptr;
 HANDLE g_singleInstanceMutex = nullptr;
@@ -894,7 +895,7 @@ static void ValidateIniKeys()
         "tasx|disablecpuboost", "tasx|warmclientfiles", "tasx|warmmaxmb",
         "tasx|desktopheapexpand", "tasx|injectorownsgraphics",
         "tasx|forcegraphicsflags", "tasx|preset", "tasx|disabletelemetry",
-        "tasx|boosthotkey", "tasx|farmboostdefault",
+        "tasx|boosthotkey", "tasx|pageinintervalsec", "tasx|farmboostdefault",
         "roblox|uncapfps", "roblox|targetfps", "roblox|renderer",
         "roblox|lighting", "roblox|texturequality",
         "roblox|disabletelemetry", "roblox|extraversionsdirs",
@@ -1000,6 +1001,7 @@ int InitSubsystems()
     SystemCleanPass(true);
 
     bool jobsOk = JobsInit();
+    if (!config_get_bool("TASX", "TrimUnfocused", 1)) StopAllTrimmers();
 
     // Startup banner: admin status, job mode, enabled/disabled features.
     // Printed ONCE - replaces the old per-feature "needs admin" spam.
@@ -1117,6 +1119,13 @@ int RunTasx()
         RetryBlockedHooks();
 
         ULONGLONG now = GetTickCount64();
+
+        // Auto page-in every N minutes (default 300 = 5 min) when clients active
+        int pageInSec = config_get_int("TASX", "PageInIntervalSec", 300);
+        if (pageInSec > 0 && !g_rbxHandles.empty() && (now - g_lastPageInMs) >= (ULONGLONG)pageInSec * 1000 && !g_pageInBusy) {
+            g_lastPageInMs = now;
+            PageInFarm();
+        }
 
         // Periodic WS cache refresh ~10s, plus GDI guard, audio refresh, dynamic jobs
         if (now - g_lastWsUpdateMs >= 10000) {
