@@ -4,3 +4,8 @@
 **/RAZR
 **/.vs
 *.o
+*.exe
+*.res
+*.log
+*.old
+tests/.build
