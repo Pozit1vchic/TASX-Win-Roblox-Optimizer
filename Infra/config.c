@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define CFG_MAX_ENTRIES 192
+#define CFG_MAX_ENTRIES 512
 #define CFG_SECTION_LEN 32
 #define CFG_KEY_LEN     64
 #define CFG_VALUE_LEN   192
@@ -18,8 +18,13 @@ typedef struct {
 } CfgEntry;
 
 static CfgEntry g_entries[CFG_MAX_ENTRIES];
+/* Staging table for hot-reload: the fresh parse lands here first and is
+   memcpy'd over g_entries while the lock is still held, so readers can never
+   observe an empty table mid-reload. */
+static CfgEntry g_scratch[CFG_MAX_ENTRIES];
 static int      g_count     = 0;
 static int      g_wasLoaded = 0;
+static int      g_truncated = 0;
 static CRITICAL_SECTION g_cfgCs;
 static int      g_cfgCsInit = 0;
 
@@ -82,21 +87,24 @@ static int find_entry(const char* section, const char* key)
     return -1;
 }
 
-void config_load(const char* iniPath)
+/* Parses iniPath into dst (CFG_MAX_ENTRIES slots) without locking - the
+   caller holds g_cfgCs for the whole call. *dstCount receives the number of
+   accepted entries, *dstTruncated becomes 1 when keys had to be dropped
+   because the table was full. */
+static void parse_ini(const char* iniPath, CfgEntry* dst, int* dstCount,
+                      int* dstTruncated)
 {
     FILE* fp;
     char line[256];
     char curSection[CFG_SECTION_LEN];
+    int count = 0;
+    int truncated = 0;
 
-    ensure_cfg_cs();
-    EnterCriticalSection(&g_cfgCs);
-    if (g_wasLoaded) { LeaveCriticalSection(&g_cfgCs); return; }
-    g_wasLoaded = 1;
-    /* Hold the lock for the whole parse so concurrent readers (trimmer/job
-       threads) never see a half-written entry. INI is tiny (< 5 KB). */
+    *dstCount = 0;
+    *dstTruncated = 0;
 
     fp = fopen(iniPath, "r");
-    if (!fp) { LeaveCriticalSection(&g_cfgCs); return; }
+    if (!fp) return;
 
     /* Skip a UTF-8 BOM if present, otherwise the first section header
        ("[TASX]" read as "\xEF\xBB\xBF[TASX]") never matches. */
@@ -168,28 +176,41 @@ void config_load(const char* iniPath)
 
             if (key[0] == '\0' || curSection[0] == '\0') continue;
 
-            if (g_count >= CFG_MAX_ENTRIES) break;
+            if (count >= CFG_MAX_ENTRIES) { truncated = 1; break; }
 
             keyLen = strlen(key);
             if (keyLen >= CFG_KEY_LEN) keyLen = CFG_KEY_LEN - 1;
-            memcpy(g_entries[g_count].key, key, keyLen);
-            g_entries[g_count].key[keyLen] = '\0';
+            memcpy(dst[count].key, key, keyLen);
+            dst[count].key[keyLen] = '\0';
 
             keyLen = strlen(curSection);
             if (keyLen >= CFG_SECTION_LEN) keyLen = CFG_SECTION_LEN - 1;
-            memcpy(g_entries[g_count].section, curSection, keyLen);
-            g_entries[g_count].section[keyLen] = '\0';
+            memcpy(dst[count].section, curSection, keyLen);
+            dst[count].section[keyLen] = '\0';
 
             keyLen = strlen(val);
             if (keyLen >= CFG_VALUE_LEN) keyLen = CFG_VALUE_LEN - 1;
-            memcpy(g_entries[g_count].value, val, keyLen);
-            g_entries[g_count].value[keyLen] = '\0';
+            memcpy(dst[count].value, val, keyLen);
+            dst[count].value[keyLen] = '\0';
 
-            ++g_count;
+            ++count;
         }
     }
 
     fclose(fp);
+    *dstCount = count;
+    *dstTruncated = truncated;
+}
+
+void config_load(const char* iniPath)
+{
+    ensure_cfg_cs();
+    EnterCriticalSection(&g_cfgCs);
+    if (g_wasLoaded) { LeaveCriticalSection(&g_cfgCs); return; }
+    g_wasLoaded = 1;
+    /* Hold the lock for the whole parse so concurrent readers (trimmer/job
+       threads) never see a half-written entry. INI is tiny (< 5 KB). */
+    parse_ini(iniPath, g_entries, &g_count, &g_truncated);
     LeaveCriticalSection(&g_cfgCs);
 }
 
@@ -266,11 +287,31 @@ int config_get_bool(const char* section, const char* key, int defVal)
 void config_reload(const char* iniPath)
 {
     ensure_cfg_cs();
+    /* Parse into the scratch table and swap it in under a single lock hold.
+       The old version reset g_count first and re-parsed in place, so every
+       key (trimmer interval, FFlags preset, job caps...) collapsed to its
+       built-in default for the whole parse window - a hot-reload could flip
+       live thresholds for a few milliseconds. */
     EnterCriticalSection(&g_cfgCs);
-    g_count = 0;
-    g_wasLoaded = 0;
+    {
+        int count = 0, truncated = 0;
+        parse_ini(iniPath, g_scratch, &count, &truncated);
+        memcpy(g_entries, g_scratch, sizeof(g_entries));
+        g_count = count;
+        g_truncated = truncated;
+        g_wasLoaded = 1;
+    }
     LeaveCriticalSection(&g_cfgCs);
-    config_load(iniPath);
+}
+
+int config_truncated(void)
+{
+    return g_truncated;
+}
+
+int config_max_entries(void)
+{
+    return CFG_MAX_ENTRIES;
 }
 
 int config_get_entry_count(void)
@@ -371,6 +412,23 @@ int config_create_default(const char* iniPath)
         "BoostHotkey=Ctrl+Alt+B\n"
         "PageInIntervalSec=300\n"
         "FarmBoostDefault=0 ; 1=start with the whole farm hot\n"
+        "\n"
+        "; Farm auto-respawn (opt-in for 24/7 farms): a crashed client is\n"
+        "; relaunched with the exact same command line. Event-driven: the new\n"
+        "; process is discovered by WMI and hooked like any other spawn.\n"
+        "RespawnOnCrash=0\n"
+        "RespawnPerHourMax=6 ; per-origin-client respawns per hour (0=unlimited)\n"
+        "RespawnGlobalHourCap=60 ; hard GLOBAL crash-loop breaker per hour (0=unlimited)\n"
+        "\n"
+        "; Hung-client watchdog (default OFF - log only; farm clients can\n"
+        "; legitimately block during asset loads so auto-kill may misfire).\n"
+        "HungClientWatch=0 ; 1=detect via IsHungAppWindow + log\n"
+        "HungKill=0 ; 1=kill hung client (exit feeds auto-respawn if RespawnOnCrash=1)\n"
+        "HungKillAfterSecMin=60 ; minutes of CONTINUOUS hang before HungKill fires\n"
+        "\n"
+        "; Shared-cache LRU trim ([Net] SharedCacheRoot only - client installs\n"
+        "; are never touched, reparse points are never followed).\n"
+        "CacheMaxGB=20 ; prune oldest cache files over this size (GB), 0=off\n"
         "\n"
         "; Crash handler + timer + power + tweaks\n"
         "; TimerResolution 0.5ms is auto-disabled on farm presets without focus.\n"

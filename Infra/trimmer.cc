@@ -173,6 +173,71 @@ bool BelowSkipThresholdCached(DWORD pid)
     return it->second < limit;
 }
 
+/* One trim pass for a single client. The caller MUST hold g_mtx: the HANDLE
+   has to be used while the lock is held because ReleaseClient() erases the
+   map entry (StopTrimmer) and then CloseHandle()s the process handle - if we
+   released the lock in between, this thread could trim through a closed (and
+   possibly recycled) handle. Holding it also makes the g_wsCache reads inside
+   BelowSkipThresholdCached() safe against the writer thread
+   (TrimmerUpdateWorkingSet). No function called here re-enters g_mtx. */
+static void TrimClientLocked(DWORD pid, HANDLE h, int& trimmed, int& skipped,
+                             int& softOnly)
+{
+    // Commit-critical path: hard trim, but still never the focused instance
+    // (filtered by the caller) and never below-skip-threshold processes
+    // (trimming them only causes re-faults, zero gain).
+    int pct = tasx_get_commit_percent();
+    if (pct >= 90) {
+        if (BelowSkipThresholdCached(pid)) {
+            ++skipped;
+        } else {
+            if (LogRateLimit("trim-commit90", 60))
+                LOGW("[Trimmer] Commit %d%% -> hard trim PID %lu (reason: commit-critical)",
+                     pct, pid);
+            HardTrim(h);
+            ++trimmed;
+            static std::int64_t lastPurge = 0;
+            std::int64_t now = NowMs();
+            if (now - lastPurge > 30000) {
+                if (tasx_is_elevated()) tasx_purge_standby_list();
+                lastPurge = now;
+            }
+        }
+        return;
+    }
+
+    if (BelowSkipThresholdCached(pid)) {
+        ++skipped; // no syscall, just count
+        return;
+    }
+
+    // Two-phase logic (farm-aware)
+    std::int64_t unfocusedMs = 0;
+    auto itU = g_unfocusedSince.find(pid);
+    if (itU != g_unfocusedSince.end()) {
+        unfocusedMs = NowMs() - itU->second;
+    } else {
+        // first time we see unfocused, mark now
+        g_unfocusedSince[pid] = NowMs();
+        unfocusedMs = 0;
+    }
+
+    SoftTrim(h); // soft pass always
+    bool doHard = false;
+    if (IsFarmKeepHot()) {
+        // farm: hard only after hours-scale inactivity, never on cadence
+        doHard = (unfocusedMs > HardTrimAfterMs());
+    } else {
+        doHard = (unfocusedMs > 2 * IntervalMs());
+    }
+    if (doHard) {
+        HardTrim(h);
+        ++trimmed;
+    } else {
+        ++softOnly;
+    }
+}
+
 DWORD WINAPI SchedulerThread(LPVOID)
 {
     std::int64_t lastLog = NowMs();
@@ -231,82 +296,29 @@ DWORD WINAPI SchedulerThread(LPVOID)
         if (!haveDue) continue;
 
         DWORD pid = d.pid;
-        if (g_pageInPause.load() || g_focusedPid.load() == pid) {
-            std::lock_guard<std::mutex> lk(g_mtx);
-            g_heap.push({NowMs() + 3000, pid}); // never fight the player
-            g_unfocusedSince.erase(pid);
-            continue;
-        }
-
-        HANDLE h = nullptr;
         {
+            /* Everything below runs under g_mtx, up to and including the
+               trim syscalls (see TrimClientLocked). The scheduler thread and
+               ReleaseClient() are the only owners of g_handles/g_heap, so
+               this is the single point where a concurrent release is
+               serialised against in-flight trimming. */
             std::lock_guard<std::mutex> lk(g_mtx);
-            auto it = g_handles.find(pid);
-            if (it != g_handles.end()) h = it->second;
-        }
 
-        if (h) {
-            // Commit-critical path: hard trim, but still never the focused
-            // instance (filtered above) and never below-skip-threshold
-            // processes (trimming them only causes re-faults, zero gain).
-            int pct = tasx_get_commit_percent();
-            if (pct >= 90) {
-                if (BelowSkipThresholdCached(pid)) {
-                    ++skipped;
-                } else {
-                    if (LogRateLimit("trim-commit90", 60))
-                        LOGW("[Trimmer] Commit %d%% -> hard trim PID %lu (reason: commit-critical)",
-                             pct, pid);
-                    HardTrim(h);
-                    ++trimmed;
-                    static std::int64_t lastPurge = 0;
-                    std::int64_t now = NowMs();
-                    if (now - lastPurge > 30000) {
-                        if (tasx_is_elevated()) tasx_purge_standby_list();
-                        lastPurge = now;
-                    }
-                }
-            } else if (BelowSkipThresholdCached(pid)) {
-                ++skipped;
-                // no syscall, just count
-            } else {
-                // Two-phase logic (farm-aware)
-                std::int64_t unfocusedMs = 0;
-                {
-                    std::lock_guard<std::mutex> lk(g_mtx);
-                    auto itU = g_unfocusedSince.find(pid);
-                    if (itU != g_unfocusedSince.end()) {
-                        unfocusedMs = NowMs() - itU->second;
-                    } else {
-                        // first time we see unfocused, mark now
-                        g_unfocusedSince[pid] = NowMs();
-                        unfocusedMs = 0;
-                    }
-                }
-                // Soft pass always
-                SoftTrim(h);
-                bool doHard = false;
-                if (IsFarmKeepHot()) {
-                    // farm: hard only after hours-scale inactivity, never on cadence
-                    doHard = (unfocusedMs > HardTrimAfterMs());
-                } else {
-                    std::int64_t interval = IntervalMs();
-                    doHard = (unfocusedMs > 2 * interval);
-                }
-                if (doHard) {
-                    HardTrim(h);
-                    ++trimmed;
-                } else {
-                    ++softOnly;
-                }
+            if (g_pageInPause.load() || g_focusedPid.load() == pid) {
+                g_heap.push({NowMs() + 3000, pid}); // never fight the player
+                g_unfocusedSince.erase(pid);
+                continue;
             }
 
-            std::lock_guard<std::mutex> lk(g_mtx);
+            auto itH = g_handles.find(pid);
+            if (itH == g_handles.end()) {
+                // stale entry (client released): drop, no re-push
+                g_unfocusedSince.erase(pid);
+                continue;
+            }
+
+            TrimClientLocked(pid, itH->second, trimmed, skipped, softOnly);
             g_heap.push({NowMs() + IntervalMs() + (std::int64_t)(pid % 5) * 1000, pid});
-        } else {
-            // stale entry (client released): drop, no re-push
-            std::lock_guard<std::mutex> lk(g_mtx);
-            g_unfocusedSince.erase(pid);
         }
 
         std::int64_t now = NowMs();

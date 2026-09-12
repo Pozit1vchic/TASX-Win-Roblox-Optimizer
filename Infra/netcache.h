@@ -19,3 +19,12 @@
 void NetCacheApply();
 
 void NetCacheLogConnections(const std::unordered_set<DWORD>& clientPids);
+
+/* LRU prune of the TASX-managed shared cache ([Net] SharedCacheRoot):
+   when the cache exceeds [TASX] CacheMaxGB, the oldest files are deleted
+   until ~80% of the limit. Only regular files inside the dedicated cache
+   root are touched - junctions/reparse points are never followed, so the
+   client installs themselves are completely safe. No-op without a
+   configured SharedCacheRoot or CacheMaxGB=0. Rate-limited internally to
+   one scan per 10 minutes. */
+void NetCacheTrimIfOversized(void);

@@ -67,6 +67,10 @@ void tasx_log_configure(const char* logFilePath, int minLevel);
    Unknown/NULL -> TASX_LOG_INFO. */
 int tasx_log_level_from_str(const char* s);
 
+/* "[Log] LogTimestamps": 1 (default) prefixes every line with "[hh:mm:ss] ",
+   0 emits raw lines. Applies to stdout and the file log alike. */
+void tasx_log_set_timestamps(int on);
+
 /* printf-style, one line (appends '\n'). Thread-safe. */
 #if defined(__GNUC__) || defined(__clang__)
 #define TASX_PRINTF_FMT(a, b) __attribute__((format(printf, a, b)))
@@ -116,6 +120,14 @@ unsigned long long tasx_get_all_mask(void);
    Returns 1 on success. Also works via GlobalMemoryStatusEx fallback. */
 int tasx_get_commit_info(uint64_t* committed, uint64_t* limit);
 int tasx_get_commit_percent(void); /* 0..100, -1 on failure */
+
+/* --- Process command line (respawn support) --------------------------- */
+
+/* Reads a live process's command line via NtQueryInformationProcess
+   (ProcessCommandLineInformation, undocumented but stable since Win 8.1).
+   hProc must be opened with PROCESS_QUERY_INFORMATION. Fills out with
+   up to outLen-1 UTF-16 chars + NUL. Returns 1 on success, 0 otherwise. */
+int tasx_read_cmdline(HANDLE hProc, wchar_t* out, int outLen);
 
 /* --- ETW suppression -------------------------------------------------- */
 

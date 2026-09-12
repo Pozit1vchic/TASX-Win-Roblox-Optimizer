@@ -8,6 +8,8 @@
 #include <unordered_map>
 #include <vector>
 #include <chrono>
+#include <cstdio>
+#include <cstring>
 
 #include <windows.h>
 #include <psapi.h>
@@ -29,6 +31,7 @@
 #include "warm.h"
 #include "desktop.h"
 #include "netcache.h"
+#include "respawn.h"
 
 #include "log.h"
 #include "lograte.h"
@@ -122,6 +125,9 @@ bool g_wmiOk = false;
 char g_iniPath[MAX_PATH] = {};
 ULONGLONG g_iniMtime = 0;
 volatile LONG g_stop = 0;
+/* Set by the Ctrl handler; wakes the low-memory reactor so shutdown is
+   prompt even during a long low-mem cooldown (no more Sleep(cd * 1000)). */
+HANDLE g_stopEvent = nullptr;
 
 ULONGLONG g_lastWsUpdateMs = 0;
 ULONGLONG g_lastCrashSweepMs = 0;
@@ -139,6 +145,7 @@ BOOL WINAPI CtrlHandler(DWORD type)
         type == CTRL_CLOSE_EVENT || type == CTRL_LOGOFF_EVENT ||
         type == CTRL_SHUTDOWN_EVENT) {
         InterlockedExchange(&g_stop, 1);
+        if (g_stopEvent) SetEvent(g_stopEvent);
         return TRUE;
     }
     return FALSE;
@@ -234,6 +241,14 @@ void HookClient(DWORD pid)
     }
 
     g_rbxHandles[pid] = hProc;
+
+    // Respawn support: grab the launch command line while we hold a query
+    // handle (one NtQueryInformationProcess syscall per client hook).
+    {
+        wchar_t cmd[2048];
+        if (tasx_read_cmdline(hProc, cmd, 2048))
+            RespawnRemember(pid, std::wstring(cmd));
+    }
 
     // Register wait for exit notification (zero polling)
     RegisterProcessWait(pid, hProc);
@@ -346,6 +361,92 @@ void SweepCrashHandlers()
     for (const auto& s : stats)
         if (s.name.size() && NameContains(s.name, L"robloxcrashhandler.exe"))
             KillCrashHandlerPid(s.pid);
+}
+
+/* Hung-client watchdog (opt-in, default OFF - only logs). IsHungAppWindow
+   reports TRUE when a top-level window's message pump has not answered for
+   ~5s; farm clients can legitimately block during asset loads, so a bogus
+   kill would be worse than a hung client. HungKill=1 terminates the hung
+   process - the normal exit event then feeds auto-respawn, so a relaunch
+   only happens when RespawnOnCrash is on (loop protection is the respawn
+   hourly caps). */
+typedef std::unordered_map<DWORD, int> HungMap;
+
+BOOL CALLBACK HungEnumProc(HWND hwnd, LPARAM lp)
+{
+    auto* hung = (HungMap*)lp;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (!pid) return TRUE;
+    auto it = hung->find(pid);
+    if (it == hung->end())
+        it = hung->emplace(pid, 0).first;
+    if (IsHungAppWindow(hwnd))
+        it->second += 1;
+    return TRUE;
+}
+
+/* pid -> tick when the client first looked unresponsive. Persisted across
+   sweeps (HungSweep runs on the ~10s tick): this is what makes HungKill a
+   "kill after HungKillAfterSecMin of CONTINUOUS unresponsiveness" policy
+   instead of "kill on the first ~5s message-pump stall". */
+static std::unordered_map<DWORD, ULONGLONG> g_hungSince;
+
+void HungSweep()
+{
+    if (!config_get_bool("TASX", "HungClientWatch", 0)) {
+        g_hungSince.clear();
+        return;
+    }
+    if (g_rbxHandles.empty()) {
+        g_hungSince.clear();
+        return;
+    }
+
+    HungMap hung;
+    EnumWindows(HungEnumProc, (LPARAM)&hung);
+
+    bool kill = config_get_bool("TASX", "HungKill", 0) != 0;
+    /* Minutes of continuous unresponsiveness before HungKill actually fires;
+       values below 1 min would defeat the dwell, so they clamp to 1. */
+    int killAfterMin = config_get_int("TASX", "HungKillAfterSecMin", 60);
+    if (killAfterMin < 1) killAfterMin = 1;
+    ULONGLONG now = GetTickCount64();
+
+    for (const auto& kv : hung) {
+        if (!g_rbxHandles.count(kv.first)) continue; /* window not ours */
+
+        if (kv.second == 0) {
+            g_hungSince.erase(kv.first); /* pumped again - reset the dwell */
+            continue;
+        }
+
+        auto ins = g_hungSince.emplace(kv.first, now);
+        unsigned long heldSec = (unsigned long)((now - ins.first->second) / 1000);
+        bool killNow = kill && heldSec >= (unsigned long)killAfterMin * 60;
+
+        if (LogRateLimit("hung-client", 300))
+            LOGW("[TASX] Client PID %lu appears hung (%d unresponsive window(s)) for %lus%s",
+                 kv.first, kv.second, heldSec,
+                 kill ? (killNow ? " - killing (auto-respawn follows when enabled)"
+                                 : " - waiting out HungKillAfterSecMin")
+                      : "");
+        if (killNow) {
+            HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, kv.first);
+            if (h) {
+                TerminateProcess(h, 1);
+                CloseHandle(h);
+            }
+            g_hungSince.erase(kv.first);
+        }
+    }
+
+    /* Drop bookkeeping for clients we no longer track (released or respawned
+       under a new PID) so the map cannot grow without bound. */
+    for (auto it = g_hungSince.begin(); it != g_hungSince.end();) {
+        if (!g_rbxHandles.count(it->first)) it = g_hungSince.erase(it);
+        else ++it;
+    }
 }
 
 /* Fallback via Toolhelp snapshot (only if WMI down) */
@@ -726,14 +827,19 @@ void LowMemReactorStart()
             return 0;
         }
         // The notification is manual-reset and stays signaled while memory
-        // is low - debounce so the event queue is not flooded.
+        // is low - debounce so the event queue is not flooded. The cooldown
+        // wait is on g_stopEvent too, so Ctrl+C exits promptly instead of
+        // blocking up to 300 s in Sleep().
+        HANDLE hs[2] = { hLow, g_stopEvent };
         while (true) {
-            if (WaitForSingleObject(hLow, INFINITE) != WAIT_OBJECT_0) break;
+            if (WaitForMultipleObjects(2, hs, FALSE, INFINITE) != WAIT_OBJECT_0)
+                break; /* stop requested */
             PushEvent({Ev::LowMem, 0});
             int cd = config_get_int("TASX", "LowMemCooldownSec", 30);
             if (cd < 5) cd = 5;
             if (cd > 300) cd = 300;
-            Sleep((DWORD)cd * 1000);
+            if (WaitForSingleObject(g_stopEvent, (DWORD)cd * 1000) == WAIT_OBJECT_0)
+                break;
         }
         CloseHandle(hLow);
         return 0;
@@ -758,6 +864,10 @@ void HandleConfigChanged()
     config_reload(g_iniPath);
     tasx_log_configure(config_get_str("Log", "LogFile", ""),
                        tasx_log_level_from_str(config_get_str("Log", "LogLevel", "info")));
+    tasx_log_set_timestamps(config_get_bool("Log", "LogTimestamps", 1));
+    if (config_truncated())
+        LOGW("[TASX] WARNING: %s holds more keys than the %d-entry table - keys past the limit were ignored",
+             g_iniPath, config_max_entries());
     LOGI("[TASX] Config reloaded: %s", g_iniPath);
     /* Idempotent re-applies; trimmer thresholds are picked up lazily by
        IntervalMs()/BelowSkipThresholdCached on the next deadline. */
@@ -867,6 +977,10 @@ void HandleRobloxExited(DWORD pid)
         TimerOff();
         TweaksPowerExit();
     }
+
+    // Farm auto-respawn (opt-in). Runs on the existing event - the new
+    // process is picked up by WMI and gets the full hook automatically.
+    RespawnTrySpawn(pid);
 }
 
 /* Ini hygiene: warn once per unknown section|key (typos like BackgroudCpuCap
@@ -896,10 +1010,14 @@ static void ValidateIniKeys()
         "tasx|desktopheapexpand", "tasx|injectorownsgraphics",
         "tasx|forcegraphicsflags", "tasx|preset", "tasx|disabletelemetry",
         "tasx|boosthotkey", "tasx|pageinintervalsec", "tasx|farmboostdefault",
+        "tasx|respawnoncrash", "tasx|respawnperhourmax",
+        "tasx|respawnglobalhourcap", "tasx|hungclientwatch", "tasx|hungkill",
+        "tasx|hungkillaftersecmin", "tasx|cachemaxgb",
         "roblox|uncapfps", "roblox|targetfps", "roblox|renderer",
         "roblox|lighting", "roblox|texturequality",
         "roblox|disabletelemetry", "roblox|extraversionsdirs",
         "etw|disabletelemetry", "log|loglevel", "log|logfile",
+        "log|logtimestamps",
         "net|sharedcacheroot", "net|cachelinks",
         // [FastFlags] section name itself (+ any flag key, see above)
         "fastflags|preset", "fastflags|injectorownsgraphics",
@@ -958,6 +1076,7 @@ int InitSubsystems()
     config_load(g_iniPath);
     tasx_log_configure(config_get_str("Log", "LogFile", ""),
                        tasx_log_level_from_str(config_get_str("Log", "LogLevel", "info")));
+    tasx_log_set_timestamps(config_get_bool("Log", "LogTimestamps", 1));
     g_iniMtime = IniMtimeKey();
     if (!config_loaded()) {
         LOGW("[TASX] WARNING: TASX.ini not found - built-in defaults apply. Expected path: %s", g_iniPath);
@@ -965,6 +1084,9 @@ int InitSubsystems()
             LOGI("[TASX] Created default TASX.ini at %s", g_iniPath);
     } else {
         LOGI("[TASX] Config: %s (loaded)", g_iniPath);
+        if (config_truncated())
+            LOGW("[TASX] WARNING: %s holds more keys than the %d-entry table - keys past the limit were ignored",
+                 g_iniPath, config_max_entries());
         ValidateIniKeys();
     }
 
@@ -985,6 +1107,10 @@ int InitSubsystems()
 
     SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
     SetConsoleCtrlHandler(CtrlHandler, TRUE);
+
+    /* Signaled by the Ctrl handler; lets the low-memory reactor and any
+       long waits observe shutdown immediately (see LowMemReactorStart). */
+    g_stopEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
 
     bool elevated = tasx_is_elevated() != 0;
 
@@ -1062,6 +1188,12 @@ void ShutdownSubsystems()
     JobShutdown();
     TimerOff();
     TweaksPowerExit();
+    RespawnClearAll();
+    if (g_stopEvent) {
+        SetEvent(g_stopEvent);
+        CloseHandle(g_stopEvent);
+        g_stopEvent = nullptr;
+    }
     if (g_singleInstanceMutex) {
         ReleaseMutex(g_singleInstanceMutex);
         CloseHandle(g_singleInstanceMutex);
@@ -1138,12 +1270,14 @@ int RunTasx()
             AudioApplyBackgroundMute(ClientPidSet(), g_appliedFocus);
             JobsRefreshDynamic(g_appliedFocus != 0);
             CheckIniReload();
+            HungSweep(); // hung-client watchdog (opt-in, logs/kills)
         }
 
         // Crash handlers: only every 60s plus on RBX_ON/JobChild
         if (now - g_lastCrashSweepMs >= 60000) {
             SweepCrashHandlers();
             NetCacheLogConnections(ClientPidSet());
+            NetCacheTrimIfOversized(); // shared-cache LRU trim (rate-limited inside)
             g_lastCrashSweepMs = now;
 
             // periodic pagefile free-space check + farm budget + self CPU watchdog.
@@ -1179,9 +1313,153 @@ int RunTasx()
 
 } /* namespace */
 
-#ifdef TASX_CONSOLE
-int main()
+/* --- CLI helpers (console build) -------------------------------------- */
+
+static void CliPrintUsage(void)
 {
+    printf("TASX usage:\n"
+           "  TASX.exe                 run the optimizer (foreground agent)\n"
+           "  TASX.exe --status        one-shot farm summary, then exit\n"
+           "  TASX.exe --preset NAME   set [FastFlags] Preset=NAME in TASX.ini\n"
+           "                           (farm15|farm20|farm30|weak|balanced|off)\n"
+           "  TASX.exe --help          this text\n");
+}
+
+static void CliLower(char* s, size_t n)
+{
+    for (size_t i = 0; i + 1 < n && s[i]; ++i)
+        if (s[i] >= 'A' && s[i] <= 'Z') s[i] = (char)(s[i] + ('a' - 'A'));
+}
+
+static int CliStatus(void)
+{
+    config_default_path(g_iniPath, MAX_PATH);
+    config_load(g_iniPath);
+
+    MEMORYSTATUSEX ms{};
+    ms.dwLength = sizeof(ms);
+    if (!GlobalMemoryStatusEx(&ms)) {
+        printf("TASX --status: GlobalMemoryStatusEx failed (err %lu)\n",
+               (unsigned long)GetLastError());
+        return 1;
+    }
+
+    int commit = tasx_get_commit_percent();
+    int clients = 0;
+    std::vector<ProcStat> stats;
+    if (QueryProcStats(stats)) {
+        for (const auto& s : stats)
+            if (s.name.size() && IsRobloxName(s.name))
+                ++clients;
+    }
+
+    double ramGB  = (double)ms.ullTotalPhys / (double)(1ull << 30);
+    double freeGB = (double)ms.ullAvailPhys / (double)(1ull << 30);
+    printf("TASX status | RAM free %.1f/%.1f GB | commit %d%% | Roblox clients %d\n",
+           freeGB, ramGB, commit, clients);
+    return 0;
+}
+
+static bool CliIsValidPreset(const char* p)
+{
+    char low[24] = {};
+    size_t n = 0;
+    for (; p[n] && n + 1 < sizeof(low); ++n) low[n] = p[n];
+    CliLower(low, sizeof(low));
+    return strcmp(low, "farm15") == 0 || strcmp(low, "farm20") == 0 ||
+           strcmp(low, "farm30") == 0 || strcmp(low, "weak") == 0 ||
+           strcmp(low, "balanced") == 0 || strcmp(low, "off") == 0;
+}
+
+/* Rewrites (or appends) [FastFlags] Preset=NAME in TASX.ini atomically
+   (tmp file + MoveFileEx). Returns 0 on success. */
+static int CliSetPreset(const char* name)
+{
+    if (!CliIsValidPreset(name)) {
+        printf("TASX --preset: unknown preset '%s' (farm15|farm20|farm30|weak|balanced|off)\n", name);
+        return 1;
+    }
+
+    config_default_path(g_iniPath, MAX_PATH);
+
+    std::vector<std::string> lines;
+    bool inFastFlags = false;
+    bool found = false;
+    {
+        FILE* f = fopen(g_iniPath, "r");
+        if (f) {
+            char buf[512];
+            while (fgets(buf, sizeof(buf), f)) {
+                std::string line(buf);
+                if (!line.empty() && line.back() == '\n') line.pop_back();
+                std::string t = line;
+                size_t b = t.find_first_not_of(" \t");
+                if (b != std::string::npos) t = t.substr(b);
+                if (!t.empty() && t[0] == '[') {
+                    std::string sec = t;
+                    size_t c = t.find(']');
+                    if (c != std::string::npos) sec = t.substr(1, c - 1);
+                    inFastFlags = (sec.find("FastFlags") != std::string::npos ||
+                                   sec.find("fastflags") != std::string::npos);
+                } else if (inFastFlags && !found) {
+                    std::string low = t;
+                    CliLower(&low[0], low.size() + 1);
+                    if (low.find("preset=") == 0) {
+                        lines.push_back("Preset=" + std::string(name));
+                        found = true;
+                        continue;
+                    }
+                }
+                lines.push_back(line);
+            }
+            fclose(f);
+        }
+    }
+    if (!found) {
+        lines.push_back("");
+        lines.push_back("[FastFlags]");
+        lines.push_back(std::string("Preset=") + name);
+    }
+
+    std::string tmp(g_iniPath);
+    tmp += ".tmp";
+    FILE* f = fopen(tmp.c_str(), "w");
+    if (!f) {
+        printf("TASX --preset: cannot write %s\n", tmp.c_str());
+        return 1;
+    }
+    for (const auto& line : lines)
+        fprintf(f, "%s\n", line.c_str());
+    fclose(f);
+
+    if (!MoveFileExA(tmp.c_str(), g_iniPath, MOVEFILE_REPLACE_EXISTING)) {
+        printf("TASX --preset: failed to replace %s (err %lu)\n",
+               g_iniPath, (unsigned long)GetLastError());
+        return 1;
+    }
+    printf("TASX --preset: [FastFlags] Preset=%s written to %s\n", name, g_iniPath);
+    return 0;
+}
+
+#ifdef TASX_CONSOLE
+int main(int argc, char** argv)
+{
+    if (argc > 1) {
+        for (int i = 1; i < argc; ++i) {
+            if (strcmp(argv[i], "--status") == 0)
+                return CliStatus();
+            if (strcmp(argv[i], "--preset") == 0) {
+                if (i + 1 >= argc) { CliPrintUsage(); return 1; }
+                return CliSetPreset(argv[++i]);
+            }
+            if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+                CliPrintUsage();
+                return 0;
+            }
+            CliPrintUsage();
+            return 1;
+        }
+    }
     return RunTasx();
 }
 #else

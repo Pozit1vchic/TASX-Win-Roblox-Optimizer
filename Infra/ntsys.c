@@ -29,6 +29,10 @@ typedef NTSTATUS (NTAPI *NtQuerySystemInformationFn)(int infoClass,
                                                      void* buffer,
                                                      unsigned long size,
                                                      unsigned long* needed);
+typedef NTSTATUS (NTAPI *NtQueryInformationProcessFn)(HANDLE handle, int cls,
+                                                      void* buffer,
+                                                      unsigned long size,
+                                                      unsigned long* needed);
 
 /* kernel32 dynamic surface (avoids old-SDK header gaps) */
 typedef int (WINAPI *SetProcessInformationFn)(HANDLE, int, void*, unsigned long);
@@ -343,6 +347,10 @@ static FILE* g_logFile = NULL;
 static char g_logPath[MAX_PATH] = { 0 };
 static int g_logLevel = TASX_LOG_INFO;
 static unsigned long long g_logBytes = 0;
+/* [Log] LogTimestamps: 1 = "[hh:mm:ss] " prefix on every line (default,
+   historical behaviour), 0 = raw lines. Plain int: only the master thread
+   flips it on config load/reload and readers tolerate one stale line. */
+static int g_logTimestamps = 1;
 
 void tasx_log_init(void)
 {
@@ -372,6 +380,11 @@ void tasx_log_configure(const char* logFilePath, int minLevel)
         }
     }
     LeaveCriticalSection(&g_logCs);
+}
+
+void tasx_log_set_timestamps(int on)
+{
+    g_logTimestamps = on ? 1 : 0;
 }
 
 int tasx_log_level_from_str(const char* s)
@@ -416,11 +429,17 @@ void tasx_log(int level, const char* fmt, ...)
         return;
     }
 
-    GetLocalTime(&st);
-    prefix = snprintf(line, sizeof(line), "[%02u:%02u:%02u] ",
-                      (unsigned)st.wHour, (unsigned)st.wMinute, (unsigned)st.wSecond);
-    if (prefix < 0) prefix = 0;
-    if ((size_t)prefix >= sizeof(line) - 2) prefix = (int)sizeof(line) - 2;
+    if (g_logTimestamps) {
+        GetLocalTime(&st);
+        prefix = snprintf(line, sizeof(line), "[%02u:%02u:%02u] ",
+                          (unsigned)st.wHour, (unsigned)st.wMinute, (unsigned)st.wSecond);
+        if (prefix < 0) prefix = 0;
+        if ((size_t)prefix >= sizeof(line) - 2) prefix = (int)sizeof(line) - 2;
+    } else {
+        /* [Log] LogTimestamps=0: raw lines (log diffing / line-oriented tooling) */
+        prefix = 0;
+        line[0] = '\0';
+    }
 
     va_start(ap, fmt);
     vsnprintf(line + prefix, sizeof(line) - (size_t)prefix, fmt, ap);
@@ -740,4 +759,53 @@ TASX_SYS_PROC* tasx_query_system_processes(void)
         size = needed > size ? needed + (1ul << 20) : size + (1ul << 20);
     }
     return NULL;
+}
+/* Respawn support: capture a live client's command line so a crashed farm
+   client can be relaunched with EXACTLY the same arguments. The buffer
+   layout is a UNICODE_STRING header (len/maxLen in bytes) immediately
+   followed by the UTF-16 characters. */
+#define TASX_PROCESS_COMMAND_LINE_INFORMATION 60
+#define TASX_CMD_LINE_MAX_BYTES (64u * 1024u)
+
+int tasx_read_cmdline(HANDLE hProc, wchar_t* out, int outLen)
+{
+    static NtQueryInformationProcessFn fn = NULL;
+    static int resolved = 0;
+
+    if (!hProc || hProc == INVALID_HANDLE_VALUE || !out || outLen <= 0)
+        return 0;
+
+    if (!resolved) {
+        fn = (NtQueryInformationProcessFn)nt_fn("NtQueryInformationProcess");
+        resolved = 1;
+    }
+    if (!fn) return 0;
+
+    /* Size probe: expects STATUS_INFO_LENGTH_MISMATCH + needed bytes. */
+    unsigned long needed = 0;
+    NTSTATUS st = fn(hProc, TASX_PROCESS_COMMAND_LINE_INFORMATION, NULL, 0, &needed);
+    if (st != (NTSTATUS)0xC0000004L /* STATUS_INFO_LENGTH_MISMATCH */ || needed < 4)
+        return 0;
+    if (needed > TASX_CMD_LINE_MAX_BYTES) needed = TASX_CMD_LINE_MAX_BYTES;
+
+    unsigned char* buf = (unsigned char*)malloc(needed);
+    if (!buf) return 0;
+
+    unsigned long got = 0;
+    st = fn(hProc, TASX_PROCESS_COMMAND_LINE_INFORMATION, buf, needed, &got);
+    int ok = 0;
+    if (TASX_NT_SUCCESS(st) && got >= 4) {
+        unsigned short strLen = *(unsigned short*)buf;           /* bytes  */
+        (void)*(unsigned short*)(buf + 2);                       /* maxLen */
+        size_t chars = (size_t)strLen / sizeof(wchar_t);
+        size_t avail = ((size_t)got - 4) / sizeof(wchar_t);
+        if (chars > avail) chars = avail;
+        if (chars > (size_t)outLen - 1) chars = (size_t)outLen - 1;
+        if (chars) memcpy(out, buf + 4, chars * sizeof(wchar_t));
+        out[chars] = L'\0';
+        if (chars && out[chars - 1] == L'\0') out[chars - 1] = L'\0'; /* trim NUL */
+        ok = 1;
+    }
+    free(buf);
+    return ok;
 }

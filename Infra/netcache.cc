@@ -2,9 +2,11 @@
 
 #include "config.h"
 #include "log.h"
+#include "lograte.h"
 
 #include <iphlpapi.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -198,4 +200,104 @@ void NetCacheLogConnections(const std::unordered_set<DWORD>& clientPids)
 
     LOGI("[Net] %u client(s), %d established connection(s)",
          (unsigned)clientPids.size(), established);
+}
+/* --- Shared-cache LRU trim ------------------------------------------- */
+
+/* mtime (win FILETIME as u64), size. Files only - dirs and reparse points
+   are never entered/collected, so junctions inside the cache root (which
+   point at client installs!) can never be walked into or deleted. */
+namespace {
+
+struct CacheFile {
+    std::wstring path;
+    ULONGLONG   mtime;
+    ULONGLONG   size;
+};
+
+void CollectCacheFiles(const std::wstring& dir, std::vector<CacheFile>& out,
+                       int depth)
+{
+    if (depth > 4) return; /* extreme safety net - caches are shallow */
+
+    /* lpFindFileData must point at writable storage: passing NULL makes the
+       API write the first result to address 0 (access violation). The buffer
+       is filled by FindFirstFileW and refreshed by every FindNextFileW. */
+    WIN32_FIND_DATAW fd{};
+    HANDLE find = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (find == INVALID_HANDLE_VALUE) return;
+
+    do {
+        std::wstring name(fd.cFileName);
+        if (name == L"." || name == L"..") continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)
+            continue; /* junction/symlink: NEVER follow into client installs */
+
+        std::wstring full = dir + L"\\" + name;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            CollectCacheFiles(full, out, depth + 1);
+        } else {
+            ULONGLONG mtime = ((ULONGLONG)fd.ftLastWriteTime.dwHighDateTime << 32) |
+                              fd.ftLastWriteTime.dwLowDateTime;
+            ULONGLONG size = ((ULONGLONG)fd.nFileSizeHigh << 32) |
+                             fd.nFileSizeLow;
+            out.push_back({full, mtime, size});
+        }
+    } while (FindNextFileW(find, &fd));
+    FindClose(find);
+}
+
+} /* namespace */
+
+void NetCacheTrimIfOversized()
+{
+    const char* root = config_get_str("Net", "SharedCacheRoot", "");
+    if (!root[0]) return;
+    int maxGB = config_get_int("TASX", "CacheMaxGB", 0);
+    if (maxGB <= 0) return;
+
+    /* One scan per 10 min max - the walk is cheap for small caches but the
+       daily farm cache can reach tens of GB with hundreds of thousands of
+       small files. */
+    if (!LogRateLimit("cache-trim-scan", 600)) return;
+
+    std::wstring wroot(root, root + strlen(root));
+    DWORD attrs = GetFileAttributesW(wroot.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES ||
+        !(attrs & FILE_ATTRIBUTE_DIRECTORY) ||
+        (attrs & FILE_ATTRIBUTE_REPARSE_POINT))
+        return; /* missing/foreign root - never create or follow */
+
+    std::vector<CacheFile> files;
+    CollectCacheFiles(wroot, files, 0);
+    if (files.empty()) return;
+
+    ULONGLONG total = 0;
+    for (const auto& f : files) total += f.size;
+
+    ULONGLONG limitBytes = (ULONGLONG)maxGB << 30;
+    if (total <= limitBytes) return;
+
+    std::sort(files.begin(), files.end(),
+              [](const CacheFile& a, const CacheFile& b) { return a.mtime < b.mtime; });
+
+    ULONGLONG target = (ULONGLONG)((size_t)maxGB * 8 / 10) << 30; /* ~80% */
+    ULONGLONG freed = 0;
+    size_t deleted = 0;
+    for (const auto& f : files) {
+        if (total - freed <= target) break;
+        if (DeleteFileW(f.path.c_str())) {
+            freed += f.size;
+            ++deleted;
+        }
+    }
+
+    if (deleted) {
+        double gbTotal = (double)total / (1ull << 30);
+        double gbNow = (double)(total > freed ? total - freed : 0) / (1ull << 30);
+        LOGI("[Net] Cache trim: %u file(s) deleted (%.2f GB), cache now %.2f/%.2f GB (limit %d GB)",
+             (unsigned)deleted, (double)freed / (1ull << 30), gbNow, gbTotal, maxGB);
+    } else {
+        LOGW("[Net] Cache %.2f GB over %d GB limit but nothing deletable (all files locked/in use)",
+             (double)total / (1ull << 30), maxGB);
+    }
 }

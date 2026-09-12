@@ -19,7 +19,7 @@ cd /d "%~dp0"
 set CXXFLAGS=-std=c++23 -O2 -m64 -static -Wall -Wextra
 set CFLAGS=-std=c11 -O2 -m64 -Wall -Wextra
 set LIBS=-lwbemuuid -lpsapi -lpowrprof -luser32 -lkernel32 -lole32 -loleaut32 -luuid -lcomctl32 -ladvapi32 -liphlpapi
-set OBJS=master.o CPU.o WMI.o trimmer.o winhook.o hotkey.o config.o ntsys.o tweaks.o fflags.o jobs.o stats.o audio.o warm.o desktop.o netcache.o tasx.res
+set OBJS=master.o CPU.o WMI.o trimmer.o winhook.o hotkey.o config.o ntsys.o tweaks.o fflags.o jobs.o stats.o audio.o warm.o desktop.o netcache.o respawn.o tasx.res
 
 echo [build] compiling resources...
 windres tasx.rc -O coff -o tasx.res || goto :fail
@@ -43,6 +43,7 @@ g++ %CXXFLAGS% -c Infra\audio.cc    -o audio.o    || goto :fail
 g++ %CXXFLAGS% -c Infra\warm.cc     -o warm.o     || goto :fail
 g++ %CXXFLAGS% -c Infra\desktop.cc  -o desktop.o  || goto :fail
 g++ %CXXFLAGS% -c Infra\netcache.cc -o netcache.o || goto :fail
+g++ %CXXFLAGS% -c Infra\respawn.cc -o respawn.o || goto :fail
 
 if /i "%~1"=="silent" (
     echo [build] linking silent build...

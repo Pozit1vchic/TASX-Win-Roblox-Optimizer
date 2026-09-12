@@ -23,6 +23,15 @@ int         config_get_bool(const char* section, const char* key, int defVal);
 /* 1 when the file was parsed successfully. */
 int config_loaded(void);
 
+/* 1 when the most recent load hit the internal table limit and silently
+   dropped the remaining keys (config_max_entries() tells the limit) - the
+   master logs this once per startup/hot-reload so silent config loss
+   becomes visible instead of a mystery "my key does nothing". */
+int config_truncated(void);
+
+/* Capacity of the internal key table (section|key -> value entries). */
+int config_max_entries(void);
+
 /* Creates a default TASX.ini with documented values when the file is missing.
    Returns 1 if created, 0 if already exists or on failure. */
 int config_create_default(const char* iniPath);
